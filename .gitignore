@@ -1,0 +1,4 @@
+index.test.html
+index.local*.html
+*.local.html
+.DS_Store

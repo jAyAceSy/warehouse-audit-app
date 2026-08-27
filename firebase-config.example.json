@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy this into the firebaseConfig object near the top of index.html's <script> block. Get these values from Firebase Console -> Project Settings -> General -> Your apps -> SDK setup and configuration.",
+  "apiKey": "YOUR_API_KEY_HERE",
+  "authDomain": "YOUR_PROJECT_ID.firebaseapp.com",
+  "databaseURL": "https://YOUR_PROJECT_ID-default-rtdb.YOUR_REGION.firebasedatabase.app",
+  "projectId": "YOUR_PROJECT_ID",
+  "storageBucket": "YOUR_PROJECT_ID.firebasestorage.app",
+  "messagingSenderId": "YOUR_SENDER_ID",
+  "appId": "YOUR_APP_ID"
+}
