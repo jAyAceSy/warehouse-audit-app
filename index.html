@@ -1157,6 +1157,14 @@ function subLabel(item){
 function sevColor(s){return s==='High'?'var(--red-500)':s==='Medium'?'var(--orange-500)':'#C79419';}
 function fmtDate(d){ const dt=new Date(d+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}); }
 function fmtDateShort(d){ const dt=new Date(d+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+function fmtDateMMDDYY(d){
+  const dt=new Date(d);
+  if(isNaN(dt.getTime())) return d;
+  const mm=String(dt.getMonth()+1).padStart(2,'0');
+  const dd=String(dt.getDate()).padStart(2,'0');
+  const yy=String(dt.getFullYear()).slice(-2);
+  return `${mm}/${dd}/${yy}`;
+}
 function resolutionPillHTML(f){
   const s=f.resolutionStatus||'open';
   const label=s==='open'?'Open':s==='pending'?'Pending Verification':'Verified';
@@ -2542,24 +2550,23 @@ function exportFileSuffix(){
 function hasExportableData(){ return getFilteredReports().length>0; }
 function exportReportCSV(){
   if(!hasExportableData()){toast('No reports match that filter');return;}
-  let csv='';
+  let csv='Date,Submitted By,Warehouse/Area,Checklists,Title,Description,Image,Resolution,Action Plan,Image\n';
   getFilteredReports().forEach(r=>{
-    csv+=`"Audit Report — ${r.date}","Submitted by: ${r.submittedBy}"\n`;
-    csv+=`"Warehouse/Area:","${r.floor}"\n\n`;
-    csv+='Checklists,Title,Severity,Description,Image,Resolution,Action Plan,Image\n';
+    const dateStr=fmtDateMMDDYY(r.date);
+    const submitter=r.submittedBy||'Unknown';
     const findings=getFilteredReportFindings(r);
-    if(findings.length===0){ csv+='"No findings logged in this audit",,,,,,,\n'; }
-    else{
+    if(findings.length===0){
+      csv+=`"${dateStr}","${submitter}","${r.floor}","No findings logged in this audit",,,,,,\n`;
+    }else{
       findings.forEach(f=>{
         const desc=(f.description||'').replace(/"/g,'""');
         const plan=(f.actionPlan||'').replace(/"/g,'""');
         const resLabel=f.resolutionStatus==='verified'?'Verified':f.resolutionStatus==='pending'?'Pending Verification':'Open';
         const img1=f.photos.before?'Photo attached':'No photo';
         const img2=f.photos.after?'Photo attached':'No photo';
-        csv+=`"${f.area}","${f.title}",${f.severity},"${desc}",${img1},${resLabel},"${plan}",${img2}\n`;
+        csv+=`"${dateStr}","${submitter}","${r.floor}","${f.area}","${f.title}","${desc}",${img1},${resLabel},"${plan}",${img2}\n`;
       });
     }
-    csv+='\n\n';
   });
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);
@@ -2586,67 +2593,87 @@ function exportReportPDF(){
   const doc=new jsPDF({orientation:'landscape'});
   const pageH=doc.internal.pageSize.getHeight();
   const marginX=10;
-  const colW=[30,30,20,60,26,22,40,26];
+  // 0 Date | 1 Submitted By | 2 Warehouse/Area | 3 Checklists | 4 Title | 5 Description | 6 Image || 7 Resolution | 8 Action Plan | 9 Image
+  const colW=[16,24,20,26,28,55,20, 18,38,20];
   const colX=[marginX];
   for(let i=0;i<colW.length-1;i++) colX.push(colX[i]+colW[i]);
   const tableW=colW.reduce((a,b)=>a+b,0);
+  const orangeSpan=colW.slice(0,7).reduce((a,b)=>a+b,0);
+  const greenSpan=colW.slice(7).reduce((a,b)=>a+b,0);
 
   function drawTableHeader(y){
     doc.setFillColor(239,139,59);
-    doc.rect(colX[0],y,colW[0]+colW[1]+colW[2]+colW[3]+colW[4],7,'F');
+    doc.rect(colX[0],y,orangeSpan,6,'F');
     doc.setFillColor(29,154,98);
-    doc.rect(colX[5],y,colW[5]+colW[6]+colW[7],7,'F');
-    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9);
-    doc.text('Audit Findings',colX[0]+2,y+5);
-    doc.text('Resolution',colX[5]+2,y+5);
-    y+=7;
-    const heads=['Checklists','Title','Severity','Description','Image','Resolution','Action Plan','Image'];
-    doc.setFillColor(253,238,224); doc.rect(colX[0],y,tableW,7,'F');
-    doc.setFillColor(228,246,237); doc.rect(colX[5],y,colW[5]+colW[6]+colW[7],7,'F');
-    doc.setTextColor(20,24,43); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
-    heads.forEach((h,i)=>doc.text(h,colX[i]+2,y+5));
-    return y+7;
+    doc.rect(colX[7],y,greenSpan,6,'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text('Audit Findings',colX[0]+2,y+4.2);
+    doc.text('Resolution',colX[7]+2,y+4.2);
+    y+=6;
+    const heads=['Date','Submitted By','Warehouse/Area','Checklists','Title','Description','Image','Resolution','Action Plan','Image'];
+    doc.setFillColor(253,238,224); doc.rect(colX[0],y,orangeSpan,6,'F');
+    doc.setFillColor(228,246,237); doc.rect(colX[7],y,greenSpan,6,'F');
+    doc.setTextColor(20,24,43); doc.setFont('helvetica','bold'); doc.setFontSize(7);
+    heads.forEach((h,i)=>doc.text(h,colX[i]+2,y+4.2));
+    return y+6;
   }
 
-  let y=14;
-  getFilteredReports().forEach((r,idx)=>{
-    if(idx>0){ doc.addPage(); y=14; }
-    doc.setFont('helvetica','bold');doc.setFontSize(14);doc.setTextColor(15,27,51);
-    doc.text(`Audit Report — ${r.date}    Submitted by: ${r.submittedBy}`,marginX,y); y+=7;
-    doc.setFont('helvetica','normal');doc.setFontSize(10);
-    doc.text(`Warehouse/Area: ${r.floor}`,marginX,y); y+=6;
-    y=drawTableHeader(y);
+  // Flatten every filtered report into one continuous list of rows (a placeholder row for audits with zero findings)
+  const rows=[];
+  getFilteredReports().forEach(r=>{
     const findings=getFilteredReportFindings(r);
-    if(findings.length===0){
-      doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(90,100,120);
-      doc.text('No findings logged in this audit.',colX[0]+2,y+6); y+=10; return;
-    }
-    findings.forEach(f=>{
-      const descLines=doc.setFont('helvetica','normal').setFontSize(8).splitTextToSize(f.description||'—',colW[3]-4);
-      const planLines=doc.splitTextToSize(f.actionPlan||'—',colW[6]-4);
-      const titleLines=doc.splitTextToSize(f.title,colW[1]-4);
-      const maxLines=Math.max(descLines.length,planLines.length,titleLines.length,1);
-      const rowH=Math.max(maxLines*4+4,20);
+    if(findings.length===0) rows.push({r,f:null});
+    else findings.forEach(f=>rows.push({r,f}));
+  });
+
+  let y=14;
+  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.setTextColor(15,27,51);
+  doc.text('Warehouse Audit Findings Report',marginX,y); y+=7;
+  y=drawTableHeader(y);
+
+  rows.forEach(({r,f})=>{
+    const dateStr=fmtDateMMDDYY(r.date);
+    if(!f){
+      const rowH=8;
       if(y+rowH>pageH-12){ doc.addPage(); y=14; y=drawTableHeader(y); }
       doc.setDrawColor(225,230,240); doc.rect(colX[0],y,tableW,rowH);
       for(let i=1;i<colX.length;i++) doc.line(colX[i],y,colX[i],y+rowH);
-      doc.setTextColor(18,24,43);doc.setFont('helvetica','normal');doc.setFontSize(8);
-      doc.text(f.area,colX[0]+2,y+5,{maxWidth:colW[0]-4});
-      doc.text(titleLines,colX[1]+2,y+5);
-      doc.text(f.severity,colX[2]+2,y+5);
-      doc.text(descLines,colX[3]+2,y+5);
-      const fmt1=detectImgFormat(f.photos.before);
-      if(fmt1){ try{ doc.addImage(f.photos.before,fmt1,colX[4]+2,y+2,colW[4]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[4]+2,y+5,{maxWidth:colW[4]-4}); } }
-      else doc.text('No photo',colX[4]+2,y+5);
-      const resLabel=f.resolutionStatus==='verified'?'Verified':f.resolutionStatus==='pending'?'Pending':'Open';
-      doc.text(resLabel,colX[5]+2,y+5);
-      doc.text(planLines,colX[6]+2,y+5);
-      const fmt2=detectImgFormat(f.photos.after);
-      if(fmt2){ try{ doc.addImage(f.photos.after,fmt2,colX[7]+2,y+2,colW[7]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[7]+2,y+5,{maxWidth:colW[7]-4}); } }
-      else doc.text('No photo',colX[7]+2,y+5);
+      doc.setTextColor(18,24,43);doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+      doc.text(dateStr,colX[0]+2,y+5);
+      doc.text(r.submittedBy||'Unknown',colX[1]+2,y+5,{maxWidth:colW[1]-4});
+      doc.text(r.floor,colX[2]+2,y+5,{maxWidth:colW[2]-4});
+      doc.setTextColor(90,100,120);
+      doc.text('No findings logged in this audit',colX[3]+2,y+5,{maxWidth:colW[3]+colW[4]+colW[5]-4});
       y+=rowH;
-    });
-    y+=8;
+      return;
+    }
+    doc.setFont('helvetica','normal').setFontSize(6.5);
+    const descLines=doc.splitTextToSize(f.description||'—',colW[5]-4);
+    const planLines=doc.splitTextToSize(f.actionPlan||'—',colW[8]-4);
+    const titleLines=doc.splitTextToSize(f.title,colW[4]-4);
+    const areaLines=doc.splitTextToSize(f.area,colW[3]-4);
+    const maxLines=Math.max(descLines.length,planLines.length,titleLines.length,areaLines.length,1);
+    const rowH=Math.max(maxLines*3.2+4,18);
+    if(y+rowH>pageH-12){ doc.addPage(); y=14; y=drawTableHeader(y); }
+    doc.setDrawColor(225,230,240); doc.rect(colX[0],y,tableW,rowH);
+    for(let i=1;i<colX.length;i++) doc.line(colX[i],y,colX[i],y+rowH);
+    doc.setTextColor(18,24,43);doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+    doc.text(dateStr,colX[0]+2,y+4.5);
+    doc.text(r.submittedBy||'Unknown',colX[1]+2,y+4.5,{maxWidth:colW[1]-4});
+    doc.text(r.floor,colX[2]+2,y+4.5,{maxWidth:colW[2]-4});
+    doc.text(areaLines,colX[3]+2,y+4.5);
+    doc.text(titleLines,colX[4]+2,y+4.5);
+    doc.text(descLines,colX[5]+2,y+4.5);
+    const fmt1=detectImgFormat(f.photos.before);
+    if(fmt1){ try{ doc.addImage(f.photos.before,fmt1,colX[6]+2,y+2,colW[6]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[6]+2,y+4.5,{maxWidth:colW[6]-4}); } }
+    else doc.text('No photo',colX[6]+2,y+4.5);
+    const resLabel=f.resolutionStatus==='verified'?'Verified':f.resolutionStatus==='pending'?'Pending':'Open';
+    doc.text(resLabel,colX[7]+2,y+4.5);
+    doc.text(planLines,colX[8]+2,y+4.5);
+    const fmt2=detectImgFormat(f.photos.after);
+    if(fmt2){ try{ doc.addImage(f.photos.after,fmt2,colX[9]+2,y+2,colW[9]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[9]+2,y+4.5,{maxWidth:colW[9]-4}); } }
+    else doc.text('No photo',colX[9]+2,y+4.5);
+    y+=rowH;
   });
   doc.save(`warehouse-audit-report${exportFileSuffix()}.pdf`);
   logActivity('Report exported', `PDF export${exportFileSuffix()||' (all)'}`);
