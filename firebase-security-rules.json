@@ -2,8 +2,6 @@
   "rules": {
     "warehouseAuditData": {
 
-      ".read": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true",
-
       "meta": {
         "bootstrapped": {
           ".read": true,
@@ -21,40 +19,97 @@
         }
       },
 
-      "findings": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() !== null"
+      "sites": {
+        ".read": "auth != null",
+        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
       },
 
-      "checklistsByFloor": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'auditor')"
+      "areasBySite": {
+        ".read": "auth != null",
+        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+      },
+
+      "findings": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
+      },
+
+      "checklistsByArea": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
       },
 
       "reports": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'auditor')"
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
       },
 
-      "floorLastSubmitted": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'auditor')"
+      "areaLastSubmitted": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
       },
 
-      "archive": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+      "auditSessions": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
       },
 
-      "activityLog": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true"
+      "titleTemplatesBySite": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+        }
       },
 
-      "titleTemplates": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
-      },
-
-      "staffByFloor": {
-        ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+      "staffByArea": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
       },
 
       "pendingStaff": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
+      },
+
+      "activityLog": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
+      },
+
+      "adminActivityLog": {
+        ".read": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'",
         ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true"
+      },
+
+      "archive": {
+        "findings": {
+          "$siteId": {
+            ".read": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'",
+            ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+          }
+        },
+        "reports": {
+          "$siteId": {
+            ".read": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'",
+            ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+          }
+        }
       },
 
       "users": {

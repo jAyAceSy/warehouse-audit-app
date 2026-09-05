@@ -79,6 +79,9 @@
   .ci-sub.unchecked{color:var(--text-400);}
   .chevron{margin-left:auto;color:var(--text-400);flex-shrink:0;}
   .admin-edit-btn{width:26px;height:26px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:var(--blue-050);color:var(--blue-600);border:none;cursor:pointer;}
+  .chip-btn{width:30px;height:30px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;margin-left:6px;}
+  .chip-ok{background:var(--green-050,#E4F6ED);color:var(--green-600);}
+  .chip-flag{background:var(--orange-050,#FDEEE0);color:var(--orange-500);}
 
   .btn-primary{width:100%;background:var(--navy-900);color:#fff;border:none;border-radius:var(--radius-m);padding:14px;font-weight:700;font-size:14.5px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;font-family:'Inter',sans-serif;}
   .btn-primary:active{background:var(--navy-700);}
@@ -555,27 +558,12 @@ const ICONS = {
 };
 
 /* ============================================================ STATIC DATA ============================================================ */
-const FLOORS = ['1st Floor','2nd Floor','3rd Floor','4th Floor'];
 const DUE_OFFSET_DAYS={High:0,Medium:3,Low:7};
-
-const CHECKLIST_TEMPLATES = {
-  '1st Floor':['Chemical Area','Wipes Area','Dispensers Area','Trashbags Area','Loose/Damage Area'],
-  '2nd Floor':['Receiving Area','Transfer Order Area','Returns Area (Redeliver, Bad Stocks, Good Stocks)','Staging Area','Replenishment Area','Bathroom Tissue Area'],
-  '3rd Floor':['Kitchen Towel Area','Paper Towel Area','Table Napkin Area','OEM Area','Bathroom Tissue Area'],
-  '4th Floor':['Promo / Recon Area','HRT Area','Facial Tissue Area','Loose Area','Others (Partywares - cutleries, plates, aluminum foil, baking paper, etc.)','JRT Area','Cottons Area','Cotton Buds Area'],
-};
 
 function nextId(){return Date.now()*1000 + Math.floor(Math.random()*1000);}
 function todayISO(){
   const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function buildChecklistsByFloor(){
-  const out={};
-  FLOORS.forEach(floor=>{
-    out[floor]=CHECKLIST_TEMPLATES[floor].map(name=>({id:nextId(),name,status:'unchecked'}));
-  });
-  return out;
 }
 
 /* ============================================================ STATE ============================================================ */
@@ -590,56 +578,96 @@ const state = {
   needsBootstrap:false,
   userRoles:{},
   notifOpen:false,
-  floorDropdownOpen:false,
+  siteDropdownOpen:false,
+  areaDropdownOpen:false,
   auditDate:todayISO(),
-  floor:FLOORS[0],
+  sites:{},                // { [siteId]: {name,createdAt,createdBy,active} } — broadly readable, admin-writable
+  areasBySite:{},           // { [siteId]: { [areaId]: {name,order,createdAt} } } — broadly readable, admin-writable
+  siteId:null,              // the Site currently being worked in (audit / reports / dashboard context when scoped)
+  areaId:null,              // the Area currently being audited
+  accessibleSiteIds:[],     // computed: sites this signed-in user may read/write (all sites if admin)
   notifications:[],
-  checklistsByFloor:buildChecklistsByFloor(),
-  findings:[],
+  checklistsByArea:{},      // { [siteId]: { [areaId]: [items] } }
+  findingsBySite:{},        // { [siteId]: { [findingId]: finding } } — raw, per-site
+  findings:[],              // flattened across accessible sites, kept for compatibility with existing render/filter code
+  reportsBySite:{},
   reports:[],
-  floorLastSubmitted:{},
+  areaLastSubmitted:{},     // { [siteId]: { [areaId]: timestamp } }
+  auditSessionsBySite:{},   // { [siteId]: { [areaId]: {startedBy,startedByUid,startedAt,checkedCount,findingsCount} } }
   reportsFilter:'This Week',
   reportsTab:'reports',
   dashSearch:'',
+  dashSiteFilter:'all',
   rememberMe:true,
   exportDateFilter:'all',
-  exportFloorFilter:'all',
+  exportSiteFilter:'all',
+  exportAreaFilter:'all',
   exportStatusFilter:'all',
   exportAuditorFilter:'all',
   firebaseConnected:false,
   users:{},
-  activityLog:[],
+  activityLogBySite:{},
+  activityLog:[],           // flattened across accessible sites
+  adminActivityLog:[],      // admin-only global log (user mgmt, site/area mgmt)
+  archivedFindingsBySite:{},
+  archivedReportsBySite:{},
   archivedFindings:[],
   archivedReports:[],
-  titleTemplates:['Damaged Stocks','Missing Tags','FEFO Concerns','Expired Items','Blocked Fire Exit','Poor Housekeeping','Wrong Location','Broken Rack','Leaking Container','Pest Sighting'],
-  staffByFloor:{},
-  pendingStaff:{},
+  titleTemplatesBySite:{},  // { [siteId]: [titles] }
+  staffByAreaBySite:{},     // { [siteId]: { [areaId]: [names] } }
+  pendingStaffBySite:{},    // { [siteId]: { [id]: {name,areaId,requestedBy,requestedAt} } }
   filterStatus:'all',
   filterSeverity:'all',
   filterDate:'all',
-  filterFloor:'all',
+  filterSite:'all',
+  filterArea:'all',
   filterAssigned:'all',
-  exportStatusFilter:'all',
-  exportAuditorFilter:'all',
   modalStack:[],
 };
 
-function getChecklist(){ return state.checklistsByFloor[state.floor]; }
-function setChecklist(arr){ state.checklistsByFloor[state.floor]=arr; }
+const DEFAULT_TITLE_TEMPLATES=['Damaged Stocks','Missing Tags','FEFO Concerns','Expired Items','Blocked Fire Exit','Poor Housekeeping','Wrong Location','Broken Rack','Leaking Container','Pest Sighting'];
+
+function currentSite(){ return state.sites[state.siteId]; }
+function currentSiteName(){ const s=currentSite(); return s?s.name:''; }
+function currentAreas(){ return state.areasBySite[state.siteId]||{}; }
+function currentAreaList(){ return Object.entries(currentAreas()).map(([id,a])=>({id,...a})).sort((a,b)=>(a.order||0)-(b.order||0)); }
+function currentAreaName(){ const a=(state.areasBySite[state.siteId]||{})[state.areaId]; return a?a.name:''; }
+function mySiteIds(){ // sites an Auditor/Resolver is explicitly assigned to (Admin ignores this — sees everything)
+  const rec=state.userRoles[state.uid];
+  return rec && rec.sites ? Object.keys(rec.sites).filter(id=>rec.sites[id]) : [];
+}
+function computeAccessibleSiteIds(){
+  if(state.role==='admin') return Object.keys(state.sites);
+  return mySiteIds().filter(id=>state.sites[id]);
+}
+function getChecklist(){ return (state.checklistsByArea[state.siteId]||{})[state.areaId]||[]; }
+function setChecklist(arr){
+  if(!state.checklistsByArea[state.siteId]) state.checklistsByArea[state.siteId]={};
+  state.checklistsByArea[state.siteId][state.areaId]=arr;
+}
 
 /* ============================================================ FIREBASE REAL-TIME SERVICE ============================================================
-   Data model (each a separate top-level node so changes to one
-   collection never touch another, and every device gets pushed
-   updates the instant Firebase confirms a write — no polling,
-   no full-tree overwrites, no manual refresh):
+   Data model — Site is the top-level isolation boundary. Everything under findings/reports/checklists/
+   etc. is nested one level deeper by siteId, and Security Rules gate each site's subtree individually,
+   so an Auditor/Resolver assigned only to Site A is physically blocked from reading or writing Site B's
+   data — not just hidden from it in the UI.
 
      warehouseAuditData/
-       findings/            { [findingId]: finding }
-       reports/              { [reportId]: report }
-       checklistsByFloor/    { [floorName]: [items] }
-       floorLastSubmitted/   { [floorName]: timestamp }
-       userRoles/            { [uid]: {name,email,role,active,lastSeen,createdAt,createdBy} }  <- source of truth for permissions, enforced by Security Rules
-       meta/bootstrapped      true once the first Admin account exists
+       sites/                        { [siteId]: {name,createdAt,createdBy,active} }               — broadly readable, admin-writable
+       areasBySite/                  { [siteId]: { [areaId]: {name,order,createdAt} } }             — broadly readable, admin-writable
+       checklistsByArea/{siteId}/    { [areaId]: [items] }                                          — per-site gated
+       findings/{siteId}/            { [findingId]: finding }                                       — per-site gated
+       reports/{siteId}/             { [reportId]: report }                                         — per-site gated
+       areaLastSubmitted/{siteId}/   { [areaId]: timestamp }                                        — per-site gated
+       auditSessions/{siteId}/       { [areaId]: {startedBy,startedByUid,startedAt,checkedCount,findingsCount} | null } — per-site gated
+       titleTemplatesBySite/{siteId} [titles]                                                       — per-site gated
+       staffByArea/{siteId}/         { [areaId]: [names] }                                          — per-site gated
+       pendingStaff/{siteId}/        { [id]: {...} }                                                — per-site gated
+       activityLog/{siteId}/         { [id]: {...} }                                                — per-site gated (site-scoped notifications)
+       adminActivityLog/             { [id]: {...} }                                                — admin-only (user mgmt, site/area mgmt)
+       archive/findings/{siteId}/, archive/reports/{siteId}/                                        — per-site gated, admin-only write
+       userRoles/{uid}                {name,email,role,active,lastSeen,createdAt,createdBy,sites:{[siteId]:true}}
+       meta/bootstrapped              true once the first Admin account exists
    See the accompanying Security Rules doc for how writes are actually enforced server-side.
 ============================================================ */
 const firebaseConfig = {
@@ -656,7 +684,8 @@ let storageAvailable=false;
 let db=null;
 let auth=null;
 let secondaryApp=null;      // isolated Firebase app instance so Admin can create accounts without being signed out of their own session
-let refs={};           // { findings, reports, checklists, floorLastSubmitted, root }
+let refs={};                // top-level refs that don't depend on which sites are accessible (sites, areasBySite, userRoles, meta, users, adminActivityLog, archive roots)
+let siteListeners={};       // { [siteId]: { findings, reports, checklists, areaLastSubmitted, auditSessions, titleTemplates, staffByArea, pendingStaff, activityLog, archiveFindings, archiveReports } } — dynamically attached/detached per accessible site
 let listenersAttached=false;
 let appDataLoaded=false;
 let myRoleRef=null;
@@ -670,19 +699,12 @@ function initFirebase(){
     db=firebase.database();
     auth=firebase.auth();
     refs.root=db.ref(DB_PATH);
-    refs.findings=db.ref(`${DB_PATH}/findings`);
-    refs.reports=db.ref(`${DB_PATH}/reports`);
-    refs.checklists=db.ref(`${DB_PATH}/checklistsByFloor`);
-    refs.floorLastSubmitted=db.ref(`${DB_PATH}/floorLastSubmitted`);
+    refs.sites=db.ref(`${DB_PATH}/sites`);
+    refs.areasBySite=db.ref(`${DB_PATH}/areasBySite`);
     refs.users=db.ref(`${DB_PATH}/users`);
     refs.userRoles=db.ref(`${DB_PATH}/userRoles`);
     refs.meta=db.ref(`${DB_PATH}/meta`);
-    refs.activityLog=db.ref(`${DB_PATH}/activityLog`);
-    refs.archiveFindings=db.ref(`${DB_PATH}/archive/findings`);
-    refs.archiveReports=db.ref(`${DB_PATH}/archive/reports`);
-    refs.titleTemplates=db.ref(`${DB_PATH}/titleTemplates`);
-    refs.staffByFloor=db.ref(`${DB_PATH}/staffByFloor`);
-    refs.pendingStaff=db.ref(`${DB_PATH}/pendingStaff`);
+    refs.adminActivityLog=db.ref(`${DB_PATH}/adminActivityLog`);
     storageAvailable=true;
     // Firebase's own connection-state node — lets us show real offline/online status.
     db.ref('.info/connected').on('value',snap=>{
@@ -735,10 +757,11 @@ function subscribeToMyRole(uid){
     startPresenceHeartbeat(uid);
     if(!appDataLoaded){
       appDataLoaded=true;
-      logActivity('Login', `Signed in as ${rec.role}`);
+      logActivity(null, 'Login', `Signed in as ${rec.role}`);
       await loadPersistedData();
       state.tab = state.role==='resolver' ? 'dashboard' : 'audit';
     }
+    reconcileSiteSubscriptions(); // re-evaluates every time role/site-access changes, not just on first login
     render();
   }, err=>{
     console.error('role listener failed',err);
@@ -747,8 +770,9 @@ function subscribeToMyRole(uid){
 }
 function detachAllDataListeners(){
   if(myRoleRef){ myRoleRef.off(); myRoleRef=null; }
+  Object.keys(siteListeners).forEach(siteId=>detachSiteListeners(siteId));
   if(!listenersAttached) return;
-  ['findings','reports','checklists','floorLastSubmitted','users','userRoles','activityLog','archiveFindings','archiveReports','titleTemplates','staffByFloor','pendingStaff'].forEach(k=>{
+  ['sites','areasBySite','users','userRoles','adminActivityLog'].forEach(k=>{
     if(refs[k]) refs[k].off();
   });
   listenersAttached=false;
@@ -783,22 +807,26 @@ async function createUserByAdmin(name,email,password,role){
     const cred=await sAuth.createUserWithEmailAndPassword(email,password);
     await refs.userRoles.child(cred.user.uid).set({name,email,role,active:true,createdAt:Date.now(),createdBy:state.email});
     await sAuth.signOut();
-    logActivity('User created', `${name} (${role})`);
+    logActivity(null, 'User created', `${name} (${role})`);
     return true;
   }catch(e){
     toast(friendlyFirebaseError(e)); return false;
   }
 }
 async function setUserRole(uid,role){
-  try{ await refs.userRoles.child(uid).update({role}); logActivity('User role changed', role); }
+  try{ await refs.userRoles.child(uid).update({role}); logActivity(null, 'User role changed', role); }
   catch(e){ toast(friendlyFirebaseError(e)); }
 }
 async function setUserActive(uid,active){
-  try{ await refs.userRoles.child(uid).update({active}); logActivity(active?'User activated':'User deactivated'); }
+  try{ await refs.userRoles.child(uid).update({active}); logActivity(null, active?'User activated':'User deactivated'); }
+  catch(e){ toast(friendlyFirebaseError(e)); }
+}
+async function setUserSites(uid,sitesMap){
+  try{ await refs.userRoles.child(uid).update({sites:sitesMap}); logActivity(null, 'User site access changed'); }
   catch(e){ toast(friendlyFirebaseError(e)); }
 }
 async function removeUserRecord(uid){
-  try{ await refs.userRoles.child(uid).remove(); logActivity('User deleted'); }
+  try{ await refs.userRoles.child(uid).remove(); logActivity(null, 'User deleted'); }
   catch(e){ toast(friendlyFirebaseError(e)); }
 }
 async function sendPasswordReset(email){
@@ -824,145 +852,171 @@ function friendlyFirebaseError(e){
 }
 
 /* ---------- One-time migration from the old single-blob schema ---------- */
-function migrateLegacyDataIfNeeded(){
-  return refs.root.once('value').then(snap=>{
-    const data=snap.val()||{};
-    const updates={};
-    const hasLegacyArrays = Array.isArray(data.findings) || Array.isArray(data.reports);
-    if(hasLegacyArrays){
-      const findingsObj={}; (data.findings||[]).forEach(f=>{ findingsObj[String(f.id)]=f; });
-      const reportsObj={}; (data.reports||[]).forEach(r=>{ reportsObj[String(r.id)]=r; });
-      updates[`${DB_PATH}/findings`]=findingsObj;
-      updates[`${DB_PATH}/reports`]=reportsObj;
-      updates[`${DB_PATH}/checklistsByFloor`]=data.checklistsByFloor||{};
-      updates[`${DB_PATH}/floorLastSubmitted`]=data.floorLastSubmitted||{};
-    }
-    if(Object.keys(updates).length===0) return;
-    return db.ref().update(updates);
-  }).catch(e=>console.error('Migration/appKey check failed',e));
-}
-
-/* ---------- Live subscriptions — each collection updates independently ---------- */
+/* ---------- Live subscriptions ---------- */
 function objMapToArray(obj){ return obj ? Object.values(obj) : []; }
+function objMapToEntriesArray(obj){ return obj ? Object.entries(obj).map(([id,v])=>({id,...v})) : []; }
 
-function subscribeToFindings(){
-  refs.findings.on('value',snap=>{
-    state.findings=objMapToArray(snap.val()).sort((a,b)=>b.createdAt-a.createdAt);
-    rerenderIfIdle();
-  });
-}
-function subscribeToReports(){
-  refs.reports.on('value',snap=>{
-    state.reports=objMapToArray(snap.val()).sort((a,b)=>b.id-a.id);
-    rerenderIfIdle();
-  });
-}
-function subscribeToChecklists(){
-  refs.checklists.on('value',snap=>{
-    const data=snap.val();
-    if(data) state.checklistsByFloor=data;
-    rerenderIfIdle();
-  });
-}
-function subscribeToFloorLastSubmitted(){
-  refs.floorLastSubmitted.on('value',snap=>{
-    state.floorLastSubmitted=snap.val()||{};
-    rerenderIfIdle();
-  });
-}
 function rerenderIfIdle(){
   const modalOpen=document.getElementById('modalOverlay').classList.contains('open');
   if(!modalOpen && state.tab!=='welcome') render();
 }
 
-function loadPersistedData(){
-  if(!storageAvailable) return Promise.resolve();
-  return migrateLegacyDataIfNeeded().then(()=>{
-    return Promise.all([
-      refs.findings.once('value').then(s=>{ state.findings=objMapToArray(s.val()).sort((a,b)=>b.createdAt-a.createdAt); }),
-      refs.reports.once('value').then(s=>{ state.reports=objMapToArray(s.val()).sort((a,b)=>b.id-a.id); }),
-      refs.checklists.once('value').then(s=>{ const d=s.val(); if(d) state.checklistsByFloor=d; }),
-      refs.floorLastSubmitted.once('value').then(s=>{ state.floorLastSubmitted=s.val()||{}; }),
-    ]).catch(e=>console.error('Failed to load audit data',e));
-  }).then(()=>{
-    if(!listenersAttached){
-      subscribeToFindings();
-      subscribeToReports();
-      subscribeToChecklists();
-      subscribeToFloorLastSubmitted();
-      subscribeToUsers();
-      subscribeToUserRoles();
-      subscribeToActivityLog();
-      subscribeToArchive();
-      subscribeToTitleTemplates();
-      subscribeToStaffByFloor();
-      subscribeToPendingStaff();
-      listenersAttached=true;
-    }
-  });
+function recomputeFlatFindings(){
+  const out=[];
+  Object.values(state.findingsBySite).forEach(bucket=>Object.values(bucket||{}).forEach(f=>out.push(f)));
+  state.findings=out.sort((a,b)=>b.createdAt-a.createdAt);
+}
+function recomputeFlatReports(){
+  const out=[];
+  Object.values(state.reportsBySite).forEach(bucket=>Object.values(bucket||{}).forEach(r=>out.push(r)));
+  state.reports=out.sort((a,b)=>b.id-a.id);
+}
+function recomputeFlatActivityLog(){
+  const out=[];
+  Object.values(state.activityLogBySite).forEach(bucket=>objMapToEntriesArray(bucket).forEach(e=>out.push(e)));
+  state.activityLog=[...out,...state.adminActivityLog].sort((a,b)=>(b.ts||0)-(a.ts||0));
+}
+function recomputeFlatArchive(){
+  const fout=[],rout=[];
+  Object.values(state.archivedFindingsBySite).forEach(bucket=>Object.values(bucket||{}).forEach(f=>fout.push(f)));
+  Object.values(state.archivedReportsBySite).forEach(bucket=>Object.values(bucket||{}).forEach(r=>rout.push(r)));
+  state.archivedFindings=fout.sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+  state.archivedReports=rout.sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
 }
 
-/* ---------- Centralized write functions — every mutation touches only its own node ---------- */
+/* ---------- Per-Site subscriptions: attached only for Sites the signed-in user can actually access.
+   Admin's accessible set is every Site that exists; an Auditor/Resolver's is only their assigned Sites
+   (userRoles/{uid}/sites). This list is re-evaluated whenever the Sites list changes or an Admin edits
+   someone's access, and listeners are attached/detached to match — never leaving a stale subscription
+   open to a Site someone just lost access to. ---------- */
+function attachSiteListeners(siteId){
+  const base=DB_PATH;
+  const l={
+    findings:db.ref(`${base}/findings/${siteId}`),
+    reports:db.ref(`${base}/reports/${siteId}`),
+    checklists:db.ref(`${base}/checklistsByArea/${siteId}`),
+    areaLastSubmitted:db.ref(`${base}/areaLastSubmitted/${siteId}`),
+    auditSessions:db.ref(`${base}/auditSessions/${siteId}`),
+    titleTemplates:db.ref(`${base}/titleTemplatesBySite/${siteId}`),
+    staffByArea:db.ref(`${base}/staffByArea/${siteId}`),
+    pendingStaff:db.ref(`${base}/pendingStaff/${siteId}`),
+    activityLog:db.ref(`${base}/activityLog/${siteId}`),
+    archiveFindings:db.ref(`${base}/archive/findings/${siteId}`),
+    archiveReports:db.ref(`${base}/archive/reports/${siteId}`),
+  };
+  l.findings.on('value',snap=>{ state.findingsBySite[siteId]=snap.val()||{}; recomputeFlatFindings(); rerenderIfIdle(); });
+  l.reports.on('value',snap=>{ state.reportsBySite[siteId]=snap.val()||{}; recomputeFlatReports(); rerenderIfIdle(); });
+  l.checklists.on('value',snap=>{ state.checklistsByArea[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.areaLastSubmitted.on('value',snap=>{ state.areaLastSubmitted[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.auditSessions.on('value',snap=>{ state.auditSessionsBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.titleTemplates.on('value',snap=>{ const d=snap.val(); state.titleTemplatesBySite[siteId]=(Array.isArray(d)&&d.length)?d:DEFAULT_TITLE_TEMPLATES.slice(); rerenderIfIdle(); });
+  l.staffByArea.on('value',snap=>{ state.staffByAreaBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.pendingStaff.on('value',snap=>{ state.pendingStaffBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.activityLog.on('value',snap=>{ state.activityLogBySite[siteId]=snap.val()||{}; recomputeFlatActivityLog(); rerenderIfIdle(); });
+  l.archiveFindings.on('value',snap=>{ state.archivedFindingsBySite[siteId]=snap.val()||{}; recomputeFlatArchive(); rerenderIfIdle(); });
+  l.archiveReports.on('value',snap=>{ state.archivedReportsBySite[siteId]=snap.val()||{}; recomputeFlatArchive(); rerenderIfIdle(); });
+  siteListeners[siteId]=l;
+}
+function detachSiteListeners(siteId){
+  const l=siteListeners[siteId];
+  if(!l) return;
+  Object.values(l).forEach(ref=>ref.off());
+  delete siteListeners[siteId];
+  ['findingsBySite','reportsBySite','checklistsByArea','areaLastSubmitted','auditSessionsBySite','titleTemplatesBySite','staffByAreaBySite','pendingStaffBySite','activityLogBySite','archivedFindingsBySite','archivedReportsBySite'].forEach(k=>delete state[k][siteId]);
+  recomputeFlatFindings(); recomputeFlatReports(); recomputeFlatActivityLog(); recomputeFlatArchive();
+}
+function reconcileSiteSubscriptions(){
+  if(!storageAvailable || !state.role) return;
+  const accessible=computeAccessibleSiteIds();
+  state.accessibleSiteIds=accessible;
+  const accessibleSet=new Set(accessible);
+  Object.keys(siteListeners).forEach(siteId=>{ if(!accessibleSet.has(siteId)) detachSiteListeners(siteId); });
+  accessible.forEach(siteId=>{ if(!siteListeners[siteId]) attachSiteListeners(siteId); });
+  if(state.siteId && !accessibleSet.has(state.siteId)){ state.siteId=null; state.areaId=null; }
+  rerenderIfIdle();
+}
+
+/* ---------- Global (not per-Site) subscriptions — Site/Area names are broadly readable so any signed-in
+   user can resolve their own assigned Site IDs into names; only Admin can write them. ---------- */
+function subscribeToGlobalData(){
+  refs.sites.on('value',snap=>{ state.sites=snap.val()||{}; reconcileSiteSubscriptions(); rerenderIfIdle(); });
+  refs.areasBySite.on('value',snap=>{ state.areasBySite=snap.val()||{}; rerenderIfIdle(); });
+  subscribeToUsers();
+  subscribeToUserRoles();
+  if(state.role==='admin') subscribeToAdminActivityLog();
+}
+function loadPersistedData(){
+  if(!storageAvailable) return Promise.resolve();
+  if(!listenersAttached){
+    subscribeToGlobalData();
+    listenersAttached=true;
+  }
+  return Promise.resolve();
+}
+
+/* ---------- Centralized write functions — every mutation touches only its own Site's node ---------- */
 async function saveFinding(finding){
   if(!storageAvailable) return;
-  try{ await refs.findings.child(String(finding.id)).set(finding); }
+  try{ await db.ref(`${DB_PATH}/findings/${finding.siteId}/${finding.id}`).set(finding); }
   catch(e){ console.error('saveFinding failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function updateFinding(id, patch){
+async function updateFinding(siteId, id, patch){
   if(!storageAvailable) return;
-  try{ await refs.findings.child(String(id)).update(patch); }
+  try{ await db.ref(`${DB_PATH}/findings/${siteId}/${id}`).update(patch); }
   catch(e){ console.error('updateFinding failed',e); toast(friendlyFirebaseError(e)); }
 }
 async function saveReport(report){
   if(!storageAvailable) return;
-  try{ await refs.reports.child(String(report.id)).set(report); }
+  try{ await db.ref(`${DB_PATH}/reports/${report.siteId}/${report.id}`).set(report); }
   catch(e){ console.error('saveReport failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function saveChecklistsForFloor(floor, items){
+async function saveChecklistsForArea(siteId, areaId, items){
   if(!storageAvailable) return;
-  try{ await refs.checklists.child(floor).set(items); }
-  catch(e){ console.error('saveChecklistsForFloor failed',e); toast(friendlyFirebaseError(e)); }
+  try{ await db.ref(`${DB_PATH}/checklistsByArea/${siteId}/${areaId}`).set(items); }
+  catch(e){ console.error('saveChecklistsForArea failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function setFloorLastSubmitted(floor, ts){
+async function setAreaLastSubmitted(siteId, areaId, ts){
   if(!storageAvailable) return;
-  try{ await refs.floorLastSubmitted.child(floor).set(ts); }
-  catch(e){ console.error('setFloorLastSubmitted failed',e); toast(friendlyFirebaseError(e)); }
+  try{ await db.ref(`${DB_PATH}/areaLastSubmitted/${siteId}/${areaId}`).set(ts); }
+  catch(e){ console.error('setAreaLastSubmitted failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function clearAllRemoteData(){
+async function clearSiteData(siteId){
   if(!storageAvailable) return;
-  const freshChecklists=buildChecklistsByFloor();
   try{
+    const resetChecklists={};
+    const areas=state.checklistsByArea[siteId]||{};
+    Object.keys(areas).forEach(areaId=>{ resetChecklists[areaId]=(areas[areaId]||[]).map(item=>({...item,status:'unchecked'})); });
     await Promise.all([
-      refs.findings.set(null),
-      refs.reports.set(null),
-      refs.checklists.set(freshChecklists),
-      refs.floorLastSubmitted.set(null),
+      db.ref(`${DB_PATH}/findings/${siteId}`).set(null),
+      db.ref(`${DB_PATH}/reports/${siteId}`).set(null),
+      db.ref(`${DB_PATH}/checklistsByArea/${siteId}`).set(resetChecklists),
+      db.ref(`${DB_PATH}/areaLastSubmitted/${siteId}`).set(null),
+      db.ref(`${DB_PATH}/auditSessions/${siteId}`).set(null),
     ]);
-    state.checklistsByFloor=freshChecklists;
-  }catch(e){ console.error('clearAllRemoteData failed',e); toast(friendlyFirebaseError(e)); }
+  }catch(e){ console.error('clearSiteData failed',e); toast(friendlyFirebaseError(e)); }
 }
 
-/* ---------- Archive (soft delete) + restore ---------- */
+/* ---------- Archive (soft delete) + restore, per-Site ---------- */
 async function archiveFinding(finding, deletedBy){
   if(!storageAvailable) return;
   try{
     const record={...finding, deletedAt:Date.now(), deletedBy:deletedBy||'Unknown'};
     const updates={};
-    updates[`${DB_PATH}/archive/findings/${finding.id}`]=record;
-    updates[`${DB_PATH}/findings/${finding.id}`]=null;
+    updates[`${DB_PATH}/archive/findings/${finding.siteId}/${finding.id}`]=record;
+    updates[`${DB_PATH}/findings/${finding.siteId}/${finding.id}`]=null;
     await db.ref().update(updates);
   }catch(e){ console.error('archiveFinding failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function restoreFinding(id){
+async function restoreFinding(siteId, id){
   if(!storageAvailable) return;
   try{
-    const snap=await refs.archiveFindings.child(String(id)).once('value');
+    const snap=await db.ref(`${DB_PATH}/archive/findings/${siteId}/${id}`).once('value');
     const record=snap.val();
     if(!record) return;
     delete record.deletedAt; delete record.deletedBy;
     const updates={};
-    updates[`${DB_PATH}/findings/${id}`]=record;
-    updates[`${DB_PATH}/archive/findings/${id}`]=null;
+    updates[`${DB_PATH}/findings/${siteId}/${id}`]=record;
+    updates[`${DB_PATH}/archive/findings/${siteId}/${id}`]=null;
     await db.ref().update(updates);
   }catch(e){ console.error('restoreFinding failed',e); toast(friendlyFirebaseError(e)); }
 }
@@ -971,28 +1025,25 @@ async function archiveReport(report, deletedBy){
   try{
     const record={...report, deletedAt:Date.now(), deletedBy:deletedBy||'Unknown'};
     const updates={};
-    updates[`${DB_PATH}/archive/reports/${report.id}`]=record;
-    updates[`${DB_PATH}/reports/${report.id}`]=null;
+    updates[`${DB_PATH}/archive/reports/${report.siteId}/${report.id}`]=record;
+    updates[`${DB_PATH}/reports/${report.siteId}/${report.id}`]=null;
     await db.ref().update(updates);
   }catch(e){ console.error('archiveReport failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function restoreReport(id){
+async function restoreReport(siteId, id){
   if(!storageAvailable) return;
   try{
-    const snap=await refs.archiveReports.child(String(id)).once('value');
+    const snap=await db.ref(`${DB_PATH}/archive/reports/${siteId}/${id}`).once('value');
     const record=snap.val();
     if(!record) return;
     delete record.deletedAt; delete record.deletedBy;
     const updates={};
-    updates[`${DB_PATH}/reports/${id}`]=record;
-    updates[`${DB_PATH}/archive/reports/${id}`]=null;
+    updates[`${DB_PATH}/reports/${siteId}/${id}`]=record;
+    updates[`${DB_PATH}/archive/reports/${siteId}/${id}`]=null;
     await db.ref().update(updates);
   }catch(e){ console.error('restoreReport failed',e); toast(friendlyFirebaseError(e)); }
 }
-function subscribeToArchive(){
-  refs.archiveFindings.on('value',snap=>{ state.archivedFindings=objMapToArray(snap.val()).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0)); rerenderIfIdle(); });
-  refs.archiveReports.on('value',snap=>{ state.archivedReports=objMapToArray(snap.val()).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0)); rerenderIfIdle(); });
-}
+
 
 /* ---------- Presence: each signed-in user may write only their own lastSeen field (see Security Rules) ---------- */
 let presenceInterval=null;
@@ -1022,71 +1073,59 @@ function subscribeToUserRoles(){
 }
 
 /* ---------- Activity log ---------- */
-async function logActivity(action, detail){
+async function logActivity(siteId, action, detail){
   if(!storageAvailable) return;
+  const entry={ user:state.username||'Unknown', role:state.role||'', ts:Date.now(), action, detail:detail||'' };
   try{
-    await refs.activityLog.push({
-      user:state.username||'Unknown',
-      role:state.role||'',
-      ts:Date.now(),
-      action,
-      detail:detail||'',
-    });
+    if(siteId){
+      entry.siteName=(state.sites[siteId]||{}).name||'';
+      await db.ref(`${DB_PATH}/activityLog/${siteId}`).push(entry);
+    }else{
+      await db.ref(`${DB_PATH}/adminActivityLog`).push(entry);
+    }
   }catch(e){ console.error('logActivity failed',e); }
 }
-function subscribeToActivityLog(){
-  refs.activityLog.limitToLast(150).on('value',snap=>{
-    state.activityLog=objMapToArray(snap.val()).sort((a,b)=>b.ts-a.ts);
+function subscribeToAdminActivityLog(){
+  refs.adminActivityLog.limitToLast(150).on('value',snap=>{
+    state.adminActivityLog=objMapToEntriesArray(snap.val()).sort((a,b)=>b.ts-a.ts);
+    recomputeFlatActivityLog();
     rerenderIfIdle();
   });
 }
 
-/* ---------- Title templates & per-floor staff (Admin-managed) ---------- */
-function subscribeToTitleTemplates(){
-  refs.titleTemplates.on('value',snap=>{
-    const d=snap.val();
-    if(Array.isArray(d) && d.length) state.titleTemplates=d;
-    rerenderIfIdle();
-  });
-}
-function subscribeToStaffByFloor(){
-  refs.staffByFloor.on('value',snap=>{ state.staffByFloor=snap.val()||{}; rerenderIfIdle(); });
-}
-function subscribeToPendingStaff(){
-  refs.pendingStaff.on('value',snap=>{ state.pendingStaff=snap.val()||{}; rerenderIfIdle(); });
-}
-async function saveTitleTemplates(list){
+/* ---------- Title templates & per-Area staff (Admin-managed, per-Site) ---------- */
+async function saveTitleTemplates(siteId, list){
   if(!storageAvailable) return;
-  try{ await refs.titleTemplates.set(list); }
+  try{ await db.ref(`${DB_PATH}/titleTemplatesBySite/${siteId}`).set(list); }
   catch(e){ console.error('saveTitleTemplates failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function saveStaffForFloor(floor, list){
+async function saveStaffForArea(siteId, areaId, list){
   if(!storageAvailable) return;
-  try{ await refs.staffByFloor.child(floor).set(list); }
-  catch(e){ console.error('saveStaffForFloor failed',e); toast(friendlyFirebaseError(e)); }
+  try{ await db.ref(`${DB_PATH}/staffByArea/${siteId}/${areaId}`).set(list); }
+  catch(e){ console.error('saveStaffForArea failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function addPendingStaff(name, floor, requestedBy){
+async function addPendingStaff(siteId, name, areaId, requestedBy){
   if(!storageAvailable) return;
-  try{ await refs.pendingStaff.push({name, floor, requestedBy:requestedBy||'Unknown', requestedAt:Date.now()}); }
+  try{ await db.ref(`${DB_PATH}/pendingStaff/${siteId}`).push({name, areaId, requestedBy:requestedBy||'Unknown', requestedAt:Date.now()}); }
   catch(e){ console.error('addPendingStaff failed',e); }
 }
-async function approvePendingStaff(id){
+async function approvePendingStaff(siteId, id){
   if(!storageAvailable) return;
   try{
-    const snap=await refs.pendingStaff.child(id).once('value');
+    const snap=await db.ref(`${DB_PATH}/pendingStaff/${siteId}/${id}`).once('value');
     const rec=snap.val();
     if(!rec) return;
-    const current=(state.staffByFloor[rec.floor]||[]).slice();
+    const current=((state.staffByAreaBySite[siteId]||{})[rec.areaId]||[]).slice();
     if(!current.includes(rec.name)) current.push(rec.name);
     const updates={};
-    updates[`${DB_PATH}/staffByFloor/${rec.floor}`]=current;
-    updates[`${DB_PATH}/pendingStaff/${id}`]=null;
+    updates[`${DB_PATH}/staffByArea/${siteId}/${rec.areaId}`]=current;
+    updates[`${DB_PATH}/pendingStaff/${siteId}/${id}`]=null;
     await db.ref().update(updates);
   }catch(e){ console.error('approvePendingStaff failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function rejectPendingStaff(id){
+async function rejectPendingStaff(siteId, id){
   if(!storageAvailable) return;
-  try{ await refs.pendingStaff.child(id).remove(); }
+  try{ await db.ref(`${DB_PATH}/pendingStaff/${siteId}/${id}`).remove(); }
   catch(e){ console.error('rejectPendingStaff failed',e); toast(friendlyFirebaseError(e)); }
 }
 
@@ -1137,7 +1176,7 @@ function statusIcon(status){
   return `<div class="status-icon status-unchecked"></div>`;
 }
 function itemFindings(item){
-  const since=state.floorLastSubmitted[state.floor]||0;
+  const since=(state.areaLastSubmitted[state.siteId]||{})[state.areaId]||0;
   return state.findings.filter(f=>f.checklistItemId===item.id && f.createdAt>since);
 }
 function computeItemStatus(item){
@@ -1234,7 +1273,7 @@ function getFilteredFindings(){
   if(q) list=list.filter(f=>findingHaystack(f).includes(q));
   if(state.filterStatus!=='all') list=list.filter(f=>f.resolutionStatus===state.filterStatus);
   if(state.filterSeverity!=='all') list=list.filter(f=>f.severity===state.filterSeverity);
-  if(state.filterFloor!=='all') list=list.filter(f=>f.floor===state.filterFloor);
+  if(state.filterSite!=='all') list=list.filter(f=>f.siteId===state.filterSite);
   if(state.filterAssigned!=='all') list=list.filter(f=>(f.assignedTo||'')===state.filterAssigned);
   if(state.filterDate==='today'){
     const start=new Date(); start.setHours(0,0,0,0);
@@ -1264,7 +1303,7 @@ function renderWelcome(){
       <div class="welcome-brand-main">
         <div class="welcome-brand-logo">${ICONS.box}</div>
         <h1>Warehouse Audit Findings System</h1>
-        <p class="desc">Run daily checklist audits, track findings through resolution, and keep every floor accountable — all synced in real time.</p>
+        <p class="desc">Run daily checklist audits, track findings through resolution, and keep every Site accountable — all synced in real time.</p>
         <div class="welcome-badges">
           <span class="welcome-badge">${ICONS.shield} Compliance Ready</span>
           <span class="welcome-badge">${ICONS.box} Multi-Area</span>
@@ -1384,7 +1423,7 @@ function renderWelcome(){
 }
 
 function switchUser(){
-  if(state.username) logActivity('Logout', `Signed out (${state.role||''})`);
+  if(state.username) logActivity(null, 'Logout', `Signed out (${state.role||''})`);
   state.welcomeStep='login'; state.tab='welcome';
   auth.signOut();
   render();
@@ -1449,10 +1488,9 @@ function renderNotifList(){
 }
 document.addEventListener('click',(e)=>{
   if(state.notifOpen && !e.target.closest('.notif-panel') && !e.target.closest('#bellBtn')) toggleNotifPanel(false);
-  if(state.floorDropdownOpen && !e.target.closest('#floorField') && !e.target.closest('#homeFloorField')){
-    state.floorDropdownOpen=false;
-    const dd=document.getElementById('floorDropdown'); if(dd) dd.style.display='none';
-    const hdd=document.getElementById('homeFloorDropdown'); if(hdd) hdd.style.display='none';
+  if(state.areaDropdownOpen && !e.target.closest('#areaField')){
+    state.areaDropdownOpen=false;
+    const dd=document.getElementById('areaDropdown'); if(dd) dd.style.display='none';
   }
 });
 
@@ -1507,12 +1545,66 @@ function statusPillLabel(status){
 
 /* ============================================================ DAILY AUDIT TAB ============================================================ */
 function renderAudit(){
+  const isAuditor = state.role==='auditor' || state.role==='admin';
+  const isAdmin = state.role==='admin';
+  const accessible=state.accessibleSiteIds;
+
+  if(accessible.length===0){
+    document.getElementById('content').innerHTML = `
+      <div class="empty-checklist-note" style="margin-top:40px;">${ICONS.clipboard}<div>${isAdmin?'No Sites yet. Create one to get started.':'No Sites are assigned to your account yet. Contact your Admin.'}</div></div>
+      ${isAdmin?`<button class="btn-primary" id="goManageSitesBtn" style="margin-top:16px;">${ICONS.plus} Manage Sites</button>`:''}
+    `;
+    const b=document.getElementById('goManageSitesBtn');
+    if(b) b.onclick=()=>openSiteManagement();
+    return;
+  }
+  if(!state.siteId || !accessible.includes(state.siteId)){
+    state.siteId = accessible.length===1 ? accessible[0] : null;
+  }
+  const showSitePicker = accessible.length>1;
+
+  if(!state.siteId){
+    document.getElementById('content').innerHTML = `
+      <div class="section-head"><h2>Choose a Site</h2></div>
+      ${accessible.map(id=>`<div class="checklist-item" data-pick-site="${id}"><div class="status-icon status-unchecked"></div><div style="flex:1;min-width:0;"><div class="ci-name">${(state.sites[id]||{}).name||'Untitled Site'}</div></div><div class="chevron">${ICONS.chevronR}</div></div>`).join('')}
+    `;
+    document.querySelectorAll('[data-pick-site]').forEach(el=>{
+      el.onclick=()=>{ state.siteId=el.dataset.pickSite; state.areaId=null; render(); };
+    });
+    return;
+  }
+
+  const areaList=currentAreaList();
+  if(!state.areaId || !areaList.some(a=>a.id===state.areaId)){
+    state.areaId = areaList.length===1 ? areaList[0].id : null;
+  }
+
+  if(!state.areaId){
+    document.getElementById('content').innerHTML = `
+      <div class="section-head"><h2>Choose an Area — ${currentSiteName()}</h2></div>
+      ${areaList.length===0
+        ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>${isAdmin?'No Areas set up for this Site yet.':'No Areas have been set up for this Site yet. Contact your Admin.'}</div></div>${isAdmin?`<button class="btn-primary" id="goManageAreasBtn" style="margin-top:12px;">${ICONS.plus} Manage Areas</button>`:''}`
+        : areaList.map(a=>{
+            const sess=(state.auditSessionsBySite[state.siteId]||{})[a.id];
+            return `<div class="checklist-item" data-pick-area="${a.id}"><div class="status-icon ${sess?'status-warning':'status-unchecked'}">${sess?ICONS.clock:''}</div><div style="flex:1;min-width:0;"><div class="ci-name">${a.name}</div>${sess?`<div class="ci-sub warning">In progress — started by ${sess.startedBy}</div>`:''}</div><div class="chevron">${ICONS.chevronR}</div></div>`;
+          }).join('')}
+      ${showSitePicker?`<button class="btn-secondary" style="width:100%;margin-top:14px;" id="changeSiteBtn">${ICONS.chevronD} Change Site</button>`:''}
+    `;
+    const csb=document.getElementById('changeSiteBtn'); if(csb) csb.onclick=()=>{state.siteId=null;render();};
+    document.querySelectorAll('[data-pick-area]').forEach(el=>{
+      el.onclick=()=>{ state.areaId=el.dataset.pickArea; render(); };
+    });
+    const gmb=document.getElementById('goManageAreasBtn'); if(gmb) gmb.onclick=()=>openAreaManagement(state.siteId);
+    return;
+  }
+
+  // --- an Area is selected: hybrid one-screen checklist (inline OK / Flag) ---
   const checklist=getChecklist();
   const total=checklist.length;
   const completed=checklist.filter(c=>c.status!=='unchecked').length;
   const pct=total ? Math.round((completed/total)*100) : 0;
-  const isAuditor = state.role==='auditor' || state.role==='admin';
-  const isAdmin = state.role==='admin';
+  const session=(state.auditSessionsBySite[state.siteId]||{})[state.areaId];
+  const areaFindings = state.findings.filter(f=>f.siteId===state.siteId && f.areaId===state.areaId);
 
   let html=`
   <div class="tile-row">
@@ -1521,34 +1613,37 @@ function renderAudit(){
       <div class="tile-label">Audit Date</div>
       <div class="tile-value">${fmtDateShort(state.auditDate)}</div>
     </div>
-    <div class="tile-field" id="floorField">
+    <div class="tile-field" id="areaField">
       ${ICONS.chevronD}
-      <div class="tile-label">Warehouse / Area</div>
-      <div class="tile-value">${state.floor}</div>
-      <div class="floor-dropdown" id="floorDropdown" style="display:none;">
-        ${FLOORS.map(f=>`<div class="floor-dropdown-item" data-floor="${f}">${f===state.floor?ICONS.check:'<span style="width:15px;display:inline-block;"></span>'}<span>${f}</span></div>`).join('')}
+      <div class="tile-label">${showSitePicker?currentSiteName()+' — ':''}Area</div>
+      <div class="tile-value">${currentAreaName()}</div>
+      <div class="floor-dropdown" id="areaDropdown" style="display:none;">
+        ${areaList.map(a=>`<div class="floor-dropdown-item" data-area="${a.id}">${a.id===state.areaId?ICONS.check:'<span style="width:15px;display:inline-block;"></span>'}<span>${a.name}</span></div>`).join('')}
       </div>
     </div>
   </div>
 
-  ${!isAuditor && !isAdmin ? `<div class="lock-note">${ICONS.info} You're viewing as a Resolver. Only auditors can update checklist items or submit an audit.</div>` : ''}
-  ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use the pencil icons to manage the ${state.floor} checklist template.</div>` : ''}
+  ${session ? `<div class="lock-note" style="background:#EAF2FF;color:#1E4E9C;">${ICONS.clock} Audit in progress since ${relativeTime(session.startedAt)} — started by ${session.startedBy}.</div>` : ''}
+  ${!isAuditor ? `<div class="lock-note">${ICONS.info} You're viewing as a Resolver. Only auditors can update checklist items or submit an audit.</div>` : ''}
+  ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use the pencil icons to manage this Area's checklist template.</div>` : ''}
 
   <div class="card">
     <div class="row-between">
-      <span class="card-title" style="margin:0;">Audit Checklist — ${state.floor}</span>
+      <span class="card-title" style="margin:0;">Audit Checklist — ${currentAreaName()}</span>
       <button class="admin-edit-btn" id="addChecklistItem" title="Add Checklist Item">${ICONS.plus}</button>
     </div>
     <div style="font-size:12.5px;font-weight:700;color:var(--blue-600);margin:-4px 0 8px;">${completed} / ${total} Completed</div>
     <div class="checklist-progress-track"><div class="checklist-progress-fill" style="width:${pct}%"></div></div>
     <div style="margin-top:10px;">
-      ${total===0 ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>No checklist items for ${state.floor} yet.</div></div>` : checklist.map(item=>`
-        <div class="checklist-item" data-id="${item.id}">
+      ${total===0 ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>No checklist items for ${currentAreaName()} yet.</div></div>` : checklist.map(item=>{
+        const count=itemFindings(item).length;
+        return `<div class="checklist-item" data-id="${item.id}" style="cursor:${count>0?'pointer':'default'};">
           ${statusIcon(item.status)}
           <div style="flex:1;min-width:0;"><div class="ci-name">${item.name}</div>${subLabel(item)}</div>
           ${isAdmin ? `<button class="admin-edit-btn" data-edit="${item.id}">${ICONS.pencil}</button>` : ''}
-          <div class="chevron">${ICONS.chevronR}</div>
-        </div>`).join('')}
+          ${isAuditor ? `<button class="chip-btn chip-ok" data-ok="${item.id}" title="Mark OK">${ICONS.check}</button><button class="chip-btn chip-flag" data-flag="${item.id}" title="Flag an issue">${ICONS.wrench}</button>` : ''}
+        </div>`;
+      }).join('')}
     </div>
   </div>
 
@@ -1556,53 +1651,79 @@ function renderAudit(){
     ? `<button class="btn-primary" id="submitAuditBtn" style="background:var(--green-600);margin-bottom:20px;">${ICONS.check} Submit Audit</button>`
     : `<div class="lock-note" style="margin-bottom:20px;">${ICONS.info} Only auditors can submit the daily audit.</div>`}
 
-  <div class="section-head"><h2>Recent Findings</h2><button class="link-btn" id="viewAllFindings">View All</button></div>
-  ${groupedFindingsHTML(state.findings.slice(0,15))}
+  <div class="section-head"><h2>Recent Findings — ${currentAreaName()}</h2><button class="link-btn" id="viewAllFindings">View All</button></div>
+  ${groupedFindingsHTML(areaFindings.slice(0,15))}
 
   ${isAdmin ? `
   <div class="card">
     <div class="card-title">Admin Tools</div>
     <div class="action-tile-row" style="margin-bottom:10px;">
+      <button class="action-tile tile-checklist" id="manageSitesBtn">${ICONS.box}Manage Sites</button>
+      <button class="action-tile tile-finding" id="manageAreasBtn">${ICONS.clipboard}Manage Areas</button>
+    </div>
+    <div class="action-tile-row" style="margin-bottom:10px;">
       <button class="action-tile tile-checklist" id="manageTitlesBtn">${ICONS.pencil}Manage Titles</button>
       <button class="action-tile tile-finding" id="manageStaffBtn">${ICONS.user}Manage Staff</button>
     </div>
     <div class="action-tile-row" style="margin-bottom:10px;">
-      <button class="action-tile" style="background:#8B5CF6;" id="pendingStaffBtn">${ICONS.clock}Pending Approvals${Object.keys(state.pendingStaff).length?` (${Object.keys(state.pendingStaff).length})`:''}</button>
+      <button class="action-tile" style="background:#8B5CF6;" id="pendingStaffBtn">${ICONS.clock}Pending Approvals${Object.keys(state.pendingStaffBySite[state.siteId]||{}).length?` (${Object.keys(state.pendingStaffBySite[state.siteId]||{}).length})`:''}</button>
       <button class="action-tile" style="background:var(--navy-700);" id="userMgmtBtn">${ICONS.shield}User Management</button>
     </div>
-    <div class="action-tile-row">
+    <div class="action-tile-row" style="margin-bottom:10px;">
       <button class="action-tile" style="background:#0E7C74;" id="activityLogBtn">${ICONS.clock}Activity Log</button>
       <button class="action-tile" style="background:#5B6478;" id="archiveBtn">${ICONS.trash}Archive</button>
+    </div>
+    <div class="action-tile-row">
+      <button class="action-tile" style="background:#B45309;" id="inProgressBtn">${ICONS.clock}In-Progress Audits</button>
     </div>
   </div>` : ''}
 
   ${isAdmin ? `
   <div class="danger-zone">
     <div class="card-title">Danger Zone</div>
-    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:12px;line-height:1.4;">Permanently erases all findings, reports, and resets every floor's checklist back to the default template. This cannot be undone.</div>
-    <button class="btn-danger" id="clearAllDataBtn">${ICONS.trash} Clear All Data</button>
+    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:12px;line-height:1.4;">Permanently erases every finding and report for ${currentSiteName()}, and resets its checklist statuses back to unchecked. This cannot be undone.</div>
+    <button class="btn-danger" id="clearAllDataBtn">${ICONS.trash} Clear ${currentSiteName()} Data</button>
   </div>` : ''}
   `;
   document.getElementById('content').innerHTML=html;
 
   document.getElementById('dateField').onclick=(e)=>{e.stopPropagation();openDatePicker();};
-  const floorField=document.getElementById('floorField');
-  const floorDropdown=document.getElementById('floorDropdown');
-  floorField.onclick=(e)=>{e.stopPropagation();state.floorDropdownOpen=!state.floorDropdownOpen;floorDropdown.style.display=state.floorDropdownOpen?'block':'none';};
-  document.querySelectorAll('.floor-dropdown-item').forEach(el=>{
-    el.onclick=(e)=>{e.stopPropagation();state.floor=el.dataset.floor;state.floorDropdownOpen=false;render();toast('Area set to '+state.floor);};
+  const areaField=document.getElementById('areaField');
+  const areaDropdown=document.getElementById('areaDropdown');
+  areaField.onclick=(e)=>{e.stopPropagation();state.areaDropdownOpen=!state.areaDropdownOpen;areaDropdown.style.display=state.areaDropdownOpen?'block':'none';};
+  document.querySelectorAll('.floor-dropdown-item[data-area]').forEach(el=>{
+    el.onclick=(e)=>{e.stopPropagation();state.areaId=el.dataset.area;state.areaDropdownOpen=false;render();};
   });
   document.getElementById('viewAllFindings').onclick=()=>{state.tab='dashboard';render();};
   document.querySelectorAll('.finding-card').forEach(c=>c.onclick=()=>openFindingDetail(parseInt(c.dataset.finding)));
-  document.querySelectorAll('.checklist-item').forEach(c=>{
+
+  document.querySelectorAll('.checklist-item[data-id]').forEach(c=>{
     c.addEventListener('click',(e)=>{
-      if(e.target.closest('.admin-edit-btn')) return;
-      if(!isAuditor){toast('Only auditors can update checklist items');return;}
-      openChecklistDetail(parseInt(c.dataset.id));
+      if(e.target.closest('.admin-edit-btn')||e.target.closest('.chip-btn')) return;
+      const item=checklist.find(x=>x.id===parseInt(c.dataset.id));
+      if(itemFindings(item).length>0) openChecklistDetail(item.id);
     });
   });
   if(isAdmin){
     document.querySelectorAll('[data-edit]').forEach(b=>{b.onclick=(e)=>{e.stopPropagation();openEditChecklistItem(parseInt(b.dataset.edit));};});
+  }
+  if(isAuditor){
+    document.querySelectorAll('[data-ok]').forEach(b=>{
+      b.onclick=async(e)=>{
+        e.stopPropagation();
+        const item=checklist.find(x=>x.id===parseInt(b.dataset.ok));
+        item.status='good';
+        await runGuarded(b,'',()=>Promise.all([saveChecklistsForArea(state.siteId,state.areaId,checklist),touchAuditSession(state.siteId,state.areaId)]));
+        render();
+      };
+    });
+    document.querySelectorAll('[data-flag]').forEach(b=>{
+      b.onclick=(e)=>{
+        e.stopPropagation();
+        const item=checklist.find(x=>x.id===parseInt(b.dataset.flag));
+        openAddFinding(item);
+      };
+    });
   }
   document.getElementById('addChecklistItem').onclick=()=>{
     if(!isAdmin){toast('Only Admin can add checklist items');return;}
@@ -1612,17 +1733,18 @@ function renderAudit(){
   if(submitBtn) submitBtn.onclick=()=>submitAudit();
   const clearBtn=document.getElementById('clearAllDataBtn');
   if(clearBtn) clearBtn.onclick=()=>{
-    openConfirmModal('This will permanently delete every finding, report, and reset all checklist templates to default. This cannot be undone. Continue?',async()=>{
+    openConfirmModal(`This will permanently delete every finding and report for ${currentSiteName()}, and reset all its checklist statuses to unchecked. This cannot be undone. Continue?`,async()=>{
       const confirmBtn=document.getElementById('confirmOkBtn');
-      await runGuarded(confirmBtn,'Clearing...',async()=>{
-        state.findings=[]; state.reports=[]; state.floorLastSubmitted={};
-        await clearAllRemoteData();
-      });
+      await runGuarded(confirmBtn,'Clearing...',()=>clearSiteData(state.siteId));
       closeModal(); render();
-      logActivity('Data cleared', 'Admin cleared all findings, reports, and checklists');
-      toast('All data cleared');
+      logActivity(null, 'Data cleared', `Admin cleared all data for ${currentSiteName()}`);
+      toast('Site data cleared');
     },'Clear Everything',true);
   };
+  const manageSitesBtn=document.getElementById('manageSitesBtn');
+  if(manageSitesBtn) manageSitesBtn.onclick=()=>openSiteManagement();
+  const manageAreasBtn=document.getElementById('manageAreasBtn');
+  if(manageAreasBtn) manageAreasBtn.onclick=()=>openAreaManagement(state.siteId);
   const manageTitlesBtn=document.getElementById('manageTitlesBtn');
   if(manageTitlesBtn) manageTitlesBtn.onclick=()=>openManageTitles();
   const manageStaffBtn=document.getElementById('manageStaffBtn');
@@ -1635,6 +1757,31 @@ function renderAudit(){
   if(activityLogBtn) activityLogBtn.onclick=()=>openActivityLog();
   const archiveBtn=document.getElementById('archiveBtn');
   if(archiveBtn) archiveBtn.onclick=()=>openArchive();
+  const inProgressBtn=document.getElementById('inProgressBtn');
+  if(inProgressBtn) inProgressBtn.onclick=()=>openInProgressAudits();
+}
+
+async function touchAuditSession(siteId, areaId){
+  if(!storageAvailable) return;
+  const checklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
+  const checkedCount=checklist.filter(c=>c.status!=='unchecked').length;
+  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
+  const findingsCount=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since).length;
+  const existing=(state.auditSessionsBySite[siteId]||{})[areaId];
+  const payload={
+    startedBy: existing?existing.startedBy:(state.username||'Unknown'),
+    startedByUid: existing?existing.startedByUid:state.uid,
+    startedAt: existing?existing.startedAt:Date.now(),
+    checkedCount, findingsCount,
+    lastActivityAt: Date.now(),
+  };
+  try{ await db.ref(`${DB_PATH}/auditSessions/${siteId}/${areaId}`).set(payload); }
+  catch(e){ console.error('touchAuditSession failed',e); }
+}
+async function clearAuditSession(siteId, areaId){
+  if(!storageAvailable) return;
+  try{ await db.ref(`${DB_PATH}/auditSessions/${siteId}/${areaId}`).remove(); }
+  catch(e){ console.error('clearAuditSession failed',e); }
 }
 
 function openDatePicker(){
@@ -1649,19 +1796,18 @@ function openDatePicker(){
   };
 }
 
+/* Item detail — used when an item already has findings attached, to review/edit/add more. The fast-path
+   OK / Flag buttons on the main checklist screen handle the common case without opening this at all. */
 function openChecklistDetail(id){
   const item=getChecklist().find(c=>c.id===id);
   const attached=itemFindings(item);
-  const computed=computeItemStatus(item);
-  const computedLabel=computed==='unchecked'?'Not Checked Yet':computed==='issue'?'Critical':'Needs Attention';
-  const computedClass=computed==='unchecked'?'pill-unchecked':computed==='issue'?'pill-issue':'pill-warning';
   const canEdit=state.role==='auditor' || state.role==='admin';
   openModal(`
     <div class="modal-head"><h3>${item.name}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="row-between" style="margin-bottom:16px;"><span style="font-size:13px;font-weight:700;color:var(--text-600);">Status</span><span class="status-pill ${computedClass}" style="font-size:11.5px;">${computedLabel}</span></div>
-    <button class="btn-primary" id="addFindingHereBtn" style="background:var(--orange-500);margin-bottom:16px;">${ICONS.wrench} Add Finding</button>
+    <div class="row-between" style="margin-bottom:16px;"><span style="font-size:13px;font-weight:700;color:var(--text-600);">Status</span>${statusIcon(item.status)}</div>
+    ${canEdit?`<button class="btn-primary" id="addFindingHereBtn" style="background:var(--orange-500);margin-bottom:16px;">${ICONS.wrench} Add Another Finding</button>`:''}
     <label class="field-label">Findings Attached (${attached.length})</label>
-    <div style="margin-bottom:16px;">
+    <div>
       ${attached.length===0 ? `<div class="empty-mini" style="padding:8px 0;">No findings attached yet</div>` : attached.map(f=>`
         <div class="mini-finding" style="${findingCardStyle(f)}" data-finding="${f.id}">
           <div class="mini-thumb" style="${f.photos.before?`background-image:url('${f.photos.before}');background-size:cover;background-position:center;`:`background:${f.color}`}"></div>
@@ -1669,7 +1815,7 @@ function openChecklistDetail(id){
           ${canEdit ? `<button class="admin-edit-btn" data-edit-finding="${f.id}">${ICONS.pencil}</button>` : ''}
         </div>`).join('')}
     </div>
-    <button class="btn-primary" id="clSave">Save Status</button>
+    <button class="btn-secondary" style="width:100%;margin-top:14px;" onclick="closeModal()">Close</button>
   `);
   document.querySelectorAll('.mini-finding').forEach(el=>{
     el.addEventListener('click',(e)=>{ if(e.target.closest('[data-edit-finding]')) return; openFindingDetail(parseInt(el.dataset.finding),()=>openChecklistDetail(item.id)); });
@@ -1678,14 +1824,9 @@ function openChecklistDetail(id){
     document.querySelectorAll('[data-edit-finding]').forEach(btn=>{
       btn.onclick=(e)=>{e.stopPropagation();const f=state.findings.find(x=>x.id===parseInt(btn.dataset.editFinding));openAddFinding(item,f);};
     });
+    const addBtn=document.getElementById('addFindingHereBtn');
+    if(addBtn) addBtn.onclick=()=>openAddFinding(item);
   }
-  document.getElementById('addFindingHereBtn').onclick=()=>openAddFinding(item);
-  document.getElementById('clSave').onclick=async()=>{
-    item.status=computeItemStatus(item)==='unchecked' ? 'good' : computeItemStatus(item);
-    const btn=document.getElementById('clSave');
-    await runGuarded(btn,'Saving...',()=>saveChecklistsForFloor(state.floor,getChecklist()));
-    closeModal();render();toast('Checklist updated');
-  };
 }
 
 function openEditChecklistItem(id){
@@ -1693,7 +1834,7 @@ function openEditChecklistItem(id){
   const list=getChecklist();
   const item = isNew ? {name:''} : list.find(c=>c.id===id);
   openModal(`
-    <div class="modal-head"><h3>${isNew?'Add Checklist Item':'Edit Checklist Item'} — ${state.floor}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="modal-head"><h3>${isNew?'Add Checklist Item':'Edit Checklist Item'} — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     <div class="field-block"><label class="field-label">Item Name</label><input class="text-input" id="itemNameInput" value="${item.name}" placeholder="e.g. Loading Dock"></div>
     <button class="btn-primary" id="itemSaveBtn" style="margin-bottom:10px;">Save Item</button>
     ${!isNew?`<button class="btn-secondary" style="width:100%;color:var(--red-500);border-color:var(--red-050);" id="itemDeleteBtn">${ICONS.trash} Remove Item</button>`:''}
@@ -1701,11 +1842,11 @@ function openEditChecklistItem(id){
   document.getElementById('itemSaveBtn').onclick=async()=>{
     const name=document.getElementById('itemNameInput').value.trim();
     if(!name){toast('Please enter a name');return;}
-    if(isNew){ list.push({id:nextId(),name,status:'unchecked'}); toast('Checklist item added to '+state.floor); }
+    if(isNew){ list.push({id:nextId(),name,status:'unchecked'}); toast('Checklist item added to '+currentAreaName()); }
     else { item.name=name; toast('Checklist item updated'); }
     const btn=document.getElementById('itemSaveBtn');
-    await runGuarded(btn,'Saving...',()=>saveChecklistsForFloor(state.floor,list));
-    logActivity('Checklist modified', `${isNew?'Added':'Renamed'} "${name}" on ${state.floor}`);
+    await runGuarded(btn,'Saving...',()=>saveChecklistsForArea(state.siteId,state.areaId,list));
+    logActivity(state.siteId, 'Checklist modified', `${isNew?'Added':'Renamed'} "${name}" on ${currentSiteName()} / ${currentAreaName()}`);
     closeModal();render();
   };
   if(!isNew){
@@ -1713,26 +1854,63 @@ function openEditChecklistItem(id){
       const newList=list.filter(c=>c.id!==id);
       setChecklist(newList);
       const btn=document.getElementById('itemDeleteBtn');
-      await runGuarded(btn,'Removing...',()=>saveChecklistsForFloor(state.floor,newList));
-      logActivity('Checklist modified', `Removed "${item.name}" from ${state.floor}`);
+      await runGuarded(btn,'Removing...',()=>saveChecklistsForArea(state.siteId,state.areaId,newList));
+      logActivity(state.siteId, 'Checklist modified', `Removed "${item.name}" from ${currentSiteName()} / ${currentAreaName()}`);
       closeModal();render();toast('Checklist item removed');
     };
   }
 }
 
-/* ---------- Submit Audit ---------- */
+/* ---------- Submit / Force-submit an Audit — both funnel through finalizeAudit so a normal submit and an
+   Admin's force-close of a stale in-progress session produce an identical, correctly-dated Report. ---------- */
+async function finalizeAudit(siteId, areaId, opts){
+  opts=opts||{};
+  const checklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
+  const total=checklist.length;
+  const completed=checklist.filter(c=>c.status!=='unchecked').length;
+  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
+  const findingsForReport=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since);
+  const areaName=((state.areasBySite[siteId]||{})[areaId]||{}).name||'Unknown Area';
+  const siteName=(state.sites[siteId]||{}).name||'Unknown Site';
+  const dateLabel = opts.dateOverride || fmtDateShort(state.auditDate);
+  const newReport={
+    id:Date.now(),
+    siteId, areaId,
+    date:dateLabel,
+    floor:areaName,
+    totalItems:total,
+    completedItems:completed,
+    checklistSnapshot:JSON.parse(JSON.stringify(checklist)),
+    findingIds:findingsForReport.map(f=>f.id),
+    findingsCount:findingsForReport.length,
+    submittedBy:opts.submittedByOverride || state.username || 'Unknown',
+    forced:!!opts.forced,
+  };
+  const resetChecklist=checklist.map(item=>({...item,status:'unchecked'}));
+  const submittedAt=Date.now();
+  await Promise.all([
+    saveReport(newReport),
+    saveChecklistsForArea(siteId,areaId,resetChecklist),
+    setAreaLastSubmitted(siteId,areaId,submittedAt),
+    clearAuditSession(siteId,areaId),
+  ]);
+  logActivity(siteId, opts.forced?'Report force-submitted':'Report submitted', `Audit submitted — ${newReport.date} — ${siteName} / ${areaName} (${newReport.findingsCount} findings)${opts.forced?' — forced by Admin':''}`);
+  return newReport;
+}
+
 function submitAudit(){
+  const siteId=state.siteId, areaId=state.areaId;
   const checklist=getChecklist();
   const total=checklist.length;
   const completed=checklist.filter(c=>c.status!=='unchecked').length;
   const unchecked=total-completed;
-  const since=state.floorLastSubmitted[state.floor]||0;
-  const findingsForReport=state.findings.filter(f=>f.floor===state.floor && f.createdAt>since);
+  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
+  const findingsForReport=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since);
 
   openModal(`
-    <div class="modal-head"><h3>Review Audit — ${state.floor}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="modal-head"><h3>Review Audit — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     ${unchecked>0 ? `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} ${unchecked} area${unchecked>1?'s':''} not yet checked. You can still submit.</div>` : ''}
-    ${total===0 ? `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} No checklist items have been added yet for ${state.floor}.</div>` : ''}
+    ${total===0 ? `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} No checklist items have been added yet for ${currentAreaName()}.</div>` : ''}
     <div style="margin-bottom:16px;">
       ${checklist.map(item=>{
         const count=itemFindings(item).length;
@@ -1747,42 +1925,63 @@ function submitAudit(){
   `);
   document.getElementById('reviewCancelBtn').onclick=()=>closeModal();
   document.getElementById('reviewConfirmBtn').onclick=async()=>{
-    const newReport={
-      id:Date.now(),
-      date:fmtDateShort(state.auditDate),
-      floor:state.floor,
-      totalItems:total,
-      completedItems:completed,
-      checklistSnapshot:JSON.parse(JSON.stringify(checklist)),
-      findingIds:findingsForReport.map(f=>f.id),
-      findingsCount:findingsForReport.length,
-      submittedBy:state.username||'Unknown',
-    };
-    state.reports.unshift(newReport);
-    checklist.forEach(item=>{item.status='unchecked';});
-    const submittedAt=Date.now();
-    state.floorLastSubmitted[state.floor]=submittedAt;
     const btn=document.getElementById('reviewConfirmBtn');
-    await runGuarded(btn,'Submitting...',()=>Promise.all([
-      saveReport(newReport),
-      saveChecklistsForFloor(state.floor,checklist),
-      setFloorLastSubmitted(state.floor,submittedAt),
-    ]));
-    logActivity('Report submitted', `Audit submitted — ${newReport.date} — ${state.floor} (${newReport.findingsCount} findings)`);
+    await runGuarded(btn,'Submitting...',()=>finalizeAudit(siteId,areaId,{}));
     closeModal();
     toast('Audit submitted — checklist reset for next audit');
     render();
   };
 }
 
+function openInProgressAudits(){
+  const rows=[];
+  Object.keys(state.auditSessionsBySite).forEach(siteId=>{
+    Object.entries(state.auditSessionsBySite[siteId]||{}).forEach(([areaId,sess])=>{
+      if(sess) rows.push({siteId,areaId,...sess});
+    });
+  });
+  rows.sort((a,b)=>a.startedAt-b.startedAt);
+  openModal(`
+    <div class="modal-head"><h3>In-Progress Audits</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    ${rows.length===0 ? `<div class="empty-mini" style="padding:16px 0;">Nothing in progress right now</div>` : rows.map(r=>{
+      const siteName=(state.sites[r.siteId]||{}).name||'Unknown Site';
+      const areaName=((state.areasBySite[r.siteId]||{})[r.areaId]||{}).name||'Unknown Area';
+      const isStale=(Date.now()-r.startedAt)>24*60*60*1000;
+      return `<div class="card" style="cursor:default;">
+        <div class="row-between"><div style="font-weight:700;font-size:14px;">${siteName} — ${areaName}</div>${isStale?`<span class="status-pill pill-issue">Stale</span>`:''}</div>
+        <div style="font-size:12px;color:var(--text-600);margin:6px 0;">Started by ${r.startedBy}, ${relativeTime(r.startedAt)} — ${r.checkedCount||0} checked, ${r.findingsCount||0} findings</div>
+        <button class="btn-secondary" style="width:100%;color:#B45309;" data-force-submit="${r.siteId}|${r.areaId}">${ICONS.check} Force Submit</button>
+      </div>`;
+    }).join('')}
+    <button class="btn-secondary" style="width:100%;margin-top:6px;" onclick="closeModal()">Close</button>
+  `);
+  document.querySelectorAll('[data-force-submit]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const [siteId,areaId]=btn.dataset.forceSubmit.split('|');
+      const sess=(state.auditSessionsBySite[siteId]||{})[areaId];
+      openConfirmModal(`Force-submit this audit as-is? It will be recorded under its original start date and attributed to ${sess.startedBy}.`,async()=>{
+        const confirmBtn=document.getElementById('confirmOkBtn');
+        const startDate=new Date(sess.startedAt);
+        const iso=`${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
+        await runGuarded(confirmBtn,'Submitting...',()=>finalizeAudit(siteId,areaId,{submittedByOverride:sess.startedBy,dateOverride:fmtDateShort(iso),forced:true}));
+        closeModal();
+        openInProgressAudits();
+        toast('Audit force-submitted');
+      },'Force Submit',true);
+    };
+  });
+}
+
 /* ---------- Admin Tools: Manage Titles ---------- */
 function openManageTitles(){
+  const siteId=state.siteId;
+  const titles=state.titleTemplatesBySite[siteId]||DEFAULT_TITLE_TEMPLATES.slice();
   openModal(`
-    <div class="modal-head"><h3>Manage Finding Titles</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="lock-note">${ICONS.info} This list populates the Title dropdown when logging a finding.</div>
+    <div class="modal-head"><h3>Manage Finding Titles — ${currentSiteName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="lock-note">${ICONS.info} This list populates the Title dropdown when logging a finding for ${currentSiteName()}. Each Site has its own list.</div>
     <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newTitleInput" placeholder="Add a new title..."><button class="btn-primary" id="addTitleBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
     <div id="titleListWrap">
-      ${state.titleTemplates.map((t,i)=>`
+      ${titles.map((t,i)=>`
         <div class="checklist-item" style="cursor:default;">
           <div style="flex:1;min-width:0;"><div class="ci-name">${t}</div></div>
           <button class="admin-edit-btn" data-remove-title="${i}" style="background:var(--red-050);color:var(--red-500);">${ICONS.trash}</button>
@@ -1793,32 +1992,33 @@ function openManageTitles(){
   document.getElementById('addTitleBtn').onclick=async()=>{
     const val=document.getElementById('newTitleInput').value.trim();
     if(!val){toast('Enter a title first');return;}
-    if(state.titleTemplates.includes(val)){toast('That title already exists');return;}
-    state.titleTemplates.push(val);
-    await saveTitleTemplates(state.titleTemplates);
-    logActivity('Checklist modified', `Added title template "${val}"`);
+    if(titles.includes(val)){toast('That title already exists');return;}
+    const updated=[...titles,val];
+    await saveTitleTemplates(siteId,updated);
+    logActivity(siteId, 'Checklist modified', `Added title template "${val}"`);
     openManageTitles();
   };
   document.querySelectorAll('[data-remove-title]').forEach(btn=>{
     btn.onclick=async()=>{
       const idx=parseInt(btn.dataset.removeTitle);
-      const removed=state.titleTemplates[idx];
-      state.titleTemplates.splice(idx,1);
-      await saveTitleTemplates(state.titleTemplates);
-      logActivity('Checklist modified', `Removed title template "${removed}"`);
+      const removed=titles[idx];
+      const updated=titles.filter((_,i)=>i!==idx);
+      await saveTitleTemplates(siteId,updated);
+      logActivity(siteId, 'Checklist modified', `Removed title template "${removed}"`);
       openManageTitles();
     };
   });
 }
 
-/* ---------- Admin Tools: Manage Staff (per floor) ---------- */
+/* ---------- Admin Tools: Manage Staff (per Site + Area) ---------- */
 function openManageStaff(){
-  const list=state.staffByFloor[state.floor]||[];
+  const siteId=state.siteId, areaId=state.areaId;
+  const list=(state.staffByAreaBySite[siteId]||{})[areaId]||[];
   openModal(`
-    <div class="modal-head"><h3>Manage Staff — ${state.floor}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="lock-note">${ICONS.info} Staff assignable to findings on ${state.floor} only. Switch floors on Daily Audit to manage another floor's roster.</div>
+    <div class="modal-head"><h3>Manage Staff — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="lock-note">${ICONS.info} Staff assignable to findings on ${currentSiteName()} / ${currentAreaName()} only. Switch Area on Daily Audit to manage another roster.</div>
     <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newStaffInput" placeholder="Add staff name..."><button class="btn-primary" id="addStaffBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
-    ${list.length===0 ? `<div class="empty-mini">No staff added for ${state.floor} yet</div>` : list.map((n,i)=>`
+    ${list.length===0 ? `<div class="empty-mini">No staff added for ${currentAreaName()} yet</div>` : list.map((n,i)=>`
       <div class="checklist-item" style="cursor:default;">
         <div style="flex:1;min-width:0;"><div class="ci-name">${n}</div></div>
         <button class="admin-edit-btn" data-remove-staff="${i}" style="background:var(--red-050);color:var(--red-500);">${ICONS.trash}</button>
@@ -1828,35 +2028,37 @@ function openManageStaff(){
   document.getElementById('addStaffBtn').onclick=async()=>{
     const val=document.getElementById('newStaffInput').value.trim();
     if(!val){toast('Enter a name first');return;}
-    const current=(state.staffByFloor[state.floor]||[]).slice();
+    const current=list.slice();
     if(current.includes(val)){toast('Already on the list');return;}
     current.push(val);
-    await saveStaffForFloor(state.floor,current);
-    logActivity('Checklist modified', `Added staff "${val}" to ${state.floor}`);
+    await saveStaffForArea(siteId,areaId,current);
+    logActivity(siteId, 'Checklist modified', `Added staff "${val}" to ${currentAreaName()}`);
     openManageStaff();
   };
   document.querySelectorAll('[data-remove-staff]').forEach(btn=>{
     btn.onclick=async()=>{
       const idx=parseInt(btn.dataset.removeStaff);
-      const current=(state.staffByFloor[state.floor]||[]).slice();
+      const current=list.slice();
       const removed=current[idx];
       current.splice(idx,1);
-      await saveStaffForFloor(state.floor,current);
-      logActivity('Checklist modified', `Removed staff "${removed}" from ${state.floor}`);
+      await saveStaffForArea(siteId,areaId,current);
+      logActivity(siteId, 'Checklist modified', `Removed staff "${removed}" from ${currentAreaName()}`);
       openManageStaff();
     };
   });
 }
 
-/* ---------- Admin Tools: Pending Staff Approvals ---------- */
+/* ---------- Admin Tools: Pending Staff Approvals (per Site) ---------- */
 function openPendingStaff(){
-  const entries=Object.entries(state.pendingStaff);
+  const siteId=state.siteId;
+  const entries=Object.entries(state.pendingStaffBySite[siteId]||{});
+  const areas=state.areasBySite[siteId]||{};
   openModal(`
-    <div class="modal-head"><h3>Pending Staff Approvals</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="modal-head"><h3>Pending Staff Approvals — ${currentSiteName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     ${entries.length===0 ? `<div class="empty-mini" style="padding:16px 0;">No pending requests</div>` : entries.map(([id,rec])=>`
       <div class="card" style="cursor:default;">
         <div style="font-weight:700;font-size:14.5px;">${rec.name}</div>
-        <div style="font-size:12.5px;color:var(--text-600);margin:2px 0 10px;">Floor: ${rec.floor} · Requested by ${rec.requestedBy}</div>
+        <div style="font-size:12.5px;color:var(--text-600);margin:2px 0 10px;">Area: ${(areas[rec.areaId]||{}).name||'Unknown'} · Requested by ${rec.requestedBy}</div>
         <div style="display:flex;gap:8px;">
           <button class="btn-secondary" data-reject="${id}" style="color:var(--red-500);">${ICONS.x} Reject</button>
           <button class="btn-primary" data-approve="${id}" style="flex:1;background:var(--green-600);">${ICONS.check} Approve</button>
@@ -1867,20 +2069,151 @@ function openPendingStaff(){
   document.querySelectorAll('[data-approve]').forEach(btn=>{
     btn.onclick=async()=>{
       const id=btn.dataset.approve;
-      const rec=state.pendingStaff[id];
-      await approvePendingStaff(id);
-      logActivity('User role changed', `Approved staff "${rec.name}" for ${rec.floor}`);
-      toast(`${rec.name} added to ${rec.floor} roster`);
+      const rec=(state.pendingStaffBySite[siteId]||{})[id];
+      const areaName=(areas[rec.areaId]||{}).name||'Unknown';
+      await approvePendingStaff(siteId,id);
+      logActivity(siteId, 'User role changed', `Approved staff "${rec.name}" for ${areaName}`);
+      toast(`${rec.name} added to ${areaName} roster`);
       openPendingStaff();
     };
   });
   document.querySelectorAll('[data-reject]').forEach(btn=>{
     btn.onclick=async()=>{
       const id=btn.dataset.reject;
-      const rec=state.pendingStaff[id];
-      await rejectPendingStaff(id);
-      logActivity('User role changed', `Rejected staff request "${rec.name}" (${rec.floor})`);
+      const rec=(state.pendingStaffBySite[siteId]||{})[id];
+      const areaName=(areas[rec.areaId]||{}).name||'Unknown';
+      await rejectPendingStaff(siteId,id);
+      logActivity(siteId, 'User role changed', `Rejected staff request "${rec.name}" (${areaName})`);
       openPendingStaff();
+    };
+  });
+}
+
+/* ---------- Admin Tools: Site Management ---------- */
+function openSiteManagement(){
+  const entries=Object.entries(state.sites).sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
+  openModal(`
+    <div class="modal-head"><h3>Manage Sites</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="lock-note">${ICONS.info} Each Site is a fully separate data space — Auditors and Resolvers only see Sites they're assigned to in User Management.</div>
+    <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newSiteInput" placeholder="e.g. Davao Warehouse"><button class="btn-primary" id="addSiteBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
+    ${entries.length===0 ? `<div class="empty-mini">No Sites yet</div>` : entries.map(([id,s])=>`
+      <div class="checklist-item" style="cursor:default;">
+        <div style="flex:1;min-width:0;"><div class="ci-name">${s.name}</div><div class="ci-sub unchecked">${Object.keys(state.areasBySite[id]||{}).length} Area(s)</div></div>
+        <button class="admin-edit-btn" data-manage-areas="${id}" title="Manage Areas">${ICONS.clipboard}</button>
+        <button class="admin-edit-btn" data-rename-site="${id}" title="Rename">${ICONS.pencil}</button>
+        <button class="admin-edit-btn" data-delete-site="${id}" style="background:var(--red-050);color:var(--red-500);" title="Delete">${ICONS.trash}</button>
+      </div>`).join('')}
+    <button class="btn-secondary" style="width:100%;margin-top:10px;" onclick="closeModal()">Close</button>
+  `);
+  document.getElementById('addSiteBtn').onclick=async()=>{
+    const name=document.getElementById('newSiteInput').value.trim();
+    if(!name){toast('Enter a Site name');return;}
+    const id=refs.sites.push().key;
+    try{
+      await refs.sites.child(id).set({name,createdAt:Date.now(),createdBy:state.username||'Unknown',active:true});
+      logActivity(null, 'Site created', name);
+      toast('Site created');
+      openSiteManagement();
+    }catch(e){ toast(friendlyFirebaseError(e)); }
+  };
+  document.querySelectorAll('[data-manage-areas]').forEach(btn=>{
+    btn.onclick=()=>openAreaManagement(btn.dataset.manageAreas);
+  });
+  document.querySelectorAll('[data-rename-site]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const id=btn.dataset.renameSite;
+      const current=state.sites[id];
+      const name=prompt('Rename Site',current.name);
+      if(!name||!name.trim()) return;
+      try{ await refs.sites.child(id).update({name:name.trim()}); logActivity(null,'Site renamed',`${current.name} → ${name.trim()}`); openSiteManagement(); }
+      catch(e){ toast(friendlyFirebaseError(e)); }
+    };
+  });
+  document.querySelectorAll('[data-delete-site]').forEach(btn=>{
+    btn.onclick=()=>{
+      const id=btn.dataset.deleteSite;
+      const s=state.sites[id];
+      openConfirmModal(`Delete "${s.name}"? This permanently removes the Site, its Areas, and every finding/report/checklist under it. This cannot be undone.`,async()=>{
+        const confirmBtn=document.getElementById('confirmOkBtn');
+        await runGuarded(confirmBtn,'Deleting...',async()=>{
+          const updates={};
+          ['findings','reports','checklistsByArea','areaLastSubmitted','auditSessions','titleTemplatesBySite','staffByArea','pendingStaff','activityLog'].forEach(k=>{
+            updates[`${DB_PATH}/${k}/${id}`]=null;
+          });
+          updates[`${DB_PATH}/archive/findings/${id}`]=null;
+          updates[`${DB_PATH}/archive/reports/${id}`]=null;
+          updates[`${DB_PATH}/areasBySite/${id}`]=null;
+          updates[`${DB_PATH}/sites/${id}`]=null;
+          await db.ref().update(updates);
+        });
+        logActivity(null,'Site deleted',s.name);
+        if(state.siteId===id){ state.siteId=null; state.areaId=null; }
+        closeModal();
+        toast('Site deleted');
+        openSiteManagement();
+      },'Delete Site',true);
+    };
+  });
+}
+
+/* ---------- Admin Tools: Area Management (per Site) ---------- */
+function openAreaManagement(siteId){
+  const site=state.sites[siteId];
+  const list=Object.entries(state.areasBySite[siteId]||{}).map(([id,a])=>({id,...a})).sort((a,b)=>(a.order||0)-(b.order||0));
+  openModal(`
+    <div class="modal-head"><h3>Manage Areas — ${site?site.name:''}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newAreaInput" placeholder="e.g. Loading Bay"><button class="btn-primary" id="addAreaBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
+    ${list.length===0 ? `<div class="empty-mini">No Areas yet for this Site</div>` : list.map(a=>`
+      <div class="checklist-item" style="cursor:default;">
+        <div style="flex:1;min-width:0;"><div class="ci-name">${a.name}</div></div>
+        <button class="admin-edit-btn" data-rename-area="${a.id}" title="Rename">${ICONS.pencil}</button>
+        <button class="admin-edit-btn" data-delete-area="${a.id}" style="background:var(--red-050);color:var(--red-500);" title="Delete">${ICONS.trash}</button>
+      </div>`).join('')}
+    <button class="btn-secondary" style="width:100%;margin-top:10px;" onclick="closeModal()">Close</button>
+  `);
+  document.getElementById('addAreaBtn').onclick=async()=>{
+    const name=document.getElementById('newAreaInput').value.trim();
+    if(!name){toast('Enter an Area name');return;}
+    const id=refs.areasBySite.child(siteId).push().key;
+    try{
+      await refs.areasBySite.child(siteId).child(id).set({name,order:list.length,createdAt:Date.now()});
+      await db.ref(`${DB_PATH}/checklistsByArea/${siteId}/${id}`).set([]);
+      logActivity(siteId,'Checklist modified',`Added Area "${name}"`);
+      toast('Area added');
+      openAreaManagement(siteId);
+    }catch(e){ toast(friendlyFirebaseError(e)); }
+  };
+  document.querySelectorAll('[data-rename-area]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const id=btn.dataset.renameArea;
+      const current=(state.areasBySite[siteId]||{})[id];
+      const name=prompt('Rename Area',current.name);
+      if(!name||!name.trim()) return;
+      try{ await refs.areasBySite.child(siteId).child(id).update({name:name.trim()}); logActivity(siteId,'Checklist modified',`${current.name} → ${name.trim()}`); openAreaManagement(siteId); }
+      catch(e){ toast(friendlyFirebaseError(e)); }
+    };
+  });
+  document.querySelectorAll('[data-delete-area]').forEach(btn=>{
+    btn.onclick=()=>{
+      const id=btn.dataset.deleteArea;
+      const a=(state.areasBySite[siteId]||{})[id];
+      openConfirmModal(`Delete "${a.name}"? Its checklist template and in-progress session will be removed. Past findings and reports stay in your records. This cannot be undone.`,async()=>{
+        const confirmBtn=document.getElementById('confirmOkBtn');
+        await runGuarded(confirmBtn,'Deleting...',async()=>{
+          const updates={};
+          updates[`${DB_PATH}/areasBySite/${siteId}/${id}`]=null;
+          updates[`${DB_PATH}/checklistsByArea/${siteId}/${id}`]=null;
+          updates[`${DB_PATH}/areaLastSubmitted/${siteId}/${id}`]=null;
+          updates[`${DB_PATH}/auditSessions/${siteId}/${id}`]=null;
+          updates[`${DB_PATH}/staffByArea/${siteId}/${id}`]=null;
+          await db.ref().update(updates);
+        });
+        logActivity(siteId,'Checklist modified',`Removed Area "${a.name}"`);
+        if(state.areaId===id) state.areaId=null;
+        closeModal();
+        toast('Area removed');
+        openAreaManagement(siteId);
+      },'Delete Area',true);
     };
   });
 }
@@ -1891,13 +2224,15 @@ function openUserManagement(){
   const entries=Object.entries(state.userRoles||{}).filter(([uid,u])=>!q||(u.name||'').toLowerCase().includes(q)||(u.email||'').toLowerCase().includes(q))
     .sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
   const ONLINE_WINDOW_MS=5*60*1000;
+  const allSites=Object.entries(state.sites);
   openModal(`
     <div class="modal-head"><h3>User Management</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="lock-note">${ICONS.info} Each person signs in with their own email + password. Role and access are enforced by the database itself, not just the app.</div>
+    <div class="lock-note">${ICONS.info} Each person signs in with their own email + password. Role, Site access, and permissions are all enforced by the database itself, not just the app. Admin always has access to every Site.</div>
     <div class="search-bar" style="margin-bottom:14px;">${ICONS.search}<input id="userSearchInput" placeholder="Search users..." value="${q}"></div>
     ${entries.length===0 ? `<div class="empty-mini">No users found</div>` : entries.map(([uid,u])=>{
       const online = u.lastSeen && (Date.now()-u.lastSeen)<ONLINE_WINDOW_MS;
       const isSelf = uid===state.uid;
+      const mySites=u.sites||{};
       return `
       <div class="card" style="cursor:default;">
         <div class="row-between">
@@ -1910,6 +2245,14 @@ function openUserManagement(){
           <option value="resolver" ${u.role==='resolver'?'selected':''}>Resolver</option>
           <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
         </select>
+        ${u.role!=='admin' ? `
+        <div style="margin-bottom:8px;">
+          <label class="field-label" style="margin-bottom:4px;">Site Access</label>
+          ${allSites.length===0 ? `<div class="empty-mini" style="padding:4px 0;">No Sites exist yet</div>` : allSites.map(([sid,s])=>`
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:4px 0;">
+              <input type="checkbox" data-site-check="${uid}|${sid}" ${mySites[sid]?'checked':''}> ${s.name}
+            </label>`).join('')}
+        </div>` : `<div class="lock-note" style="margin-bottom:8px;">${ICONS.shield} Admins automatically have access to every Site.</div>`}
         <div style="display:flex;gap:8px;">
           <button class="btn-secondary" style="flex:1;${u.active===false?'color:var(--green-600);':'color:var(--red-500);'}" data-toggle-user="${uid}" ${isSelf?'disabled':''}>${u.active===false?ICONS.check+' Reactivate':ICONS.x+' Deactivate'}</button>
           <button class="btn-secondary" style="flex:1;" data-reset-user="${uid}">${ICONS.lock} Reset PW</button>
@@ -1935,6 +2278,14 @@ function openUserManagement(){
   search.oninput=()=>openUserManagement();
   document.querySelectorAll('[data-role-select]').forEach(sel=>{
     sel.onchange=async()=>{ await setUserRole(sel.dataset.roleSelect, sel.value); openUserManagement(); };
+  });
+  document.querySelectorAll('[data-site-check]').forEach(cb=>{
+    cb.onchange=async()=>{
+      const [uid,sid]=cb.dataset.siteCheck.split('|');
+      const current={...(state.userRoles[uid].sites||{})};
+      if(cb.checked) current[sid]=true; else delete current[sid];
+      await setUserSites(uid,current);
+    };
   });
   document.querySelectorAll('[data-toggle-user]').forEach(btn=>{
     btn.onclick=async()=>{
@@ -1970,7 +2321,7 @@ function openUserManagement(){
     addBtn.disabled=true; addBtn.textContent='Creating...';
     const ok=await createUserByAdmin(name,email,pw,role);
     addBtn.disabled=false; addBtn.textContent=ICONS.check+' Create User';
-    if(ok){ toast('User created — share their email and temporary password with them'); openUserManagement(); }
+    if(ok){ toast('User created — share their email and temporary password with them. Set their Site access next.'); openUserManagement(); }
   };
 }
 
@@ -1980,7 +2331,7 @@ function openActivityLog(){
     <div class="modal-head"><h3>Activity Log</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     ${state.activityLog.length===0 ? `<div class="empty-mini" style="padding:16px 0;">No activity yet</div>` : state.activityLog.slice(0,100).map(n=>`
       <div class="kv-row" style="display:block;padding:10px 0;">
-        <div style="font-weight:700;font-size:13px;">${n.action} <span style="font-weight:600;color:var(--text-400);font-size:11px;">— ${n.role||''}</span></div>
+        <div style="font-weight:700;font-size:13px;">${n.action}${n.siteName?` <span style="font-weight:600;color:var(--blue-600);font-size:11px;">— ${n.siteName}</span>`:''} <span style="font-weight:600;color:var(--text-400);font-size:11px;">— ${n.role||''}</span></div>
         <div style="font-size:12px;color:var(--text-600);margin-top:2px;">${n.user} ${n.detail?`— ${n.detail}`:''}</div>
         <div style="font-size:10.5px;color:var(--text-400);margin-top:2px;">${new Date(n.ts).toLocaleString()}</div>
       </div>`).join('')}
@@ -1988,7 +2339,7 @@ function openActivityLog(){
   `);
 }
 
-/* ---------- Admin Tools: Archive (soft-deleted findings & reports) ---------- */
+/* ---------- Admin Tools: Archive (soft-deleted findings & reports, across all Sites) ---------- */
 function openArchive(){
   openModal(`
     <div class="modal-head"><h3>Archive</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
@@ -1996,34 +2347,34 @@ function openArchive(){
     ${state.archivedFindings.length===0 ? `<div class="empty-mini" style="padding:8px 0;">None</div>` : state.archivedFindings.map(f=>`
       <div class="card" style="cursor:default;padding:12px;">
         <div class="row-between"><div style="font-weight:700;font-size:13.5px;">${f.title}</div><div class="sev-chip sev-${f.severity}">${f.severity}</div></div>
-        <div style="font-size:11.5px;color:var(--text-600);margin:4px 0 8px;">${f.area} · Deleted by ${f.deletedBy} · ${relativeTime(f.deletedAt)}</div>
-        <button class="btn-secondary" style="width:100%;color:var(--green-600);" data-restore-finding="${f.id}">${ICONS.check} Restore</button>
+        <div style="font-size:11.5px;color:var(--text-600);margin:4px 0 8px;">${(state.sites[f.siteId]||{}).name||''} · ${f.area} · Deleted by ${f.deletedBy} · ${relativeTime(f.deletedAt)}</div>
+        <button class="btn-secondary" style="width:100%;color:var(--green-600);" data-restore-finding="${f.siteId}|${f.id}">${ICONS.check} Restore</button>
       </div>`).join('')}
     <div class="card-title" style="margin-top:16px;">Archived Reports (${state.archivedReports.length})</div>
     ${state.archivedReports.length===0 ? `<div class="empty-mini" style="padding:8px 0;">None</div>` : state.archivedReports.map(r=>`
       <div class="card" style="cursor:default;padding:12px;">
-        <div style="font-weight:700;font-size:13.5px;">${r.date} — ${r.floor}</div>
+        <div style="font-weight:700;font-size:13.5px;">${r.date} — ${(state.sites[r.siteId]||{}).name||''} / ${r.floor}</div>
         <div style="font-size:11.5px;color:var(--text-600);margin:4px 0 8px;">Deleted by ${r.deletedBy} · ${relativeTime(r.deletedAt)}</div>
-        <button class="btn-secondary" style="width:100%;color:var(--green-600);" data-restore-report="${r.id}">${ICONS.check} Restore</button>
+        <button class="btn-secondary" style="width:100%;color:var(--green-600);" data-restore-report="${r.siteId}|${r.id}">${ICONS.check} Restore</button>
       </div>`).join('')}
     <button class="btn-secondary" style="width:100%;margin-top:6px;" onclick="closeModal()">Close</button>
   `);
   document.querySelectorAll('[data-restore-finding]').forEach(btn=>{
     btn.onclick=async()=>{
-      const id=parseInt(btn.dataset.restoreFinding);
-      await restoreFinding(id);
-      logActivity('Finding edited', `Restored finding from archive (#${id})`);
-      state.archivedFindings=state.archivedFindings.filter(f=>f.id!==id);
+      const [siteId,idStr]=btn.dataset.restoreFinding.split('|');
+      const id=parseInt(idStr);
+      await restoreFinding(siteId,id);
+      logActivity(siteId, 'Finding edited', `Restored finding from archive (#${id})`);
       toast('Finding restored');
       openArchive();
     };
   });
   document.querySelectorAll('[data-restore-report]').forEach(btn=>{
     btn.onclick=async()=>{
-      const id=parseInt(btn.dataset.restoreReport);
-      await restoreReport(id);
-      logActivity('Report submitted', `Restored report from archive (#${id})`);
-      state.archivedReports=state.archivedReports.filter(r=>r.id!==id);
+      const [siteId,idStr]=btn.dataset.restoreReport.split('|');
+      const id=parseInt(idStr);
+      await restoreReport(siteId,id);
+      logActivity(siteId, 'Report submitted', `Restored report from archive (#${id})`);
       toast('Report restored');
       openArchive();
     };
@@ -2057,25 +2408,26 @@ function renderAddFindingModal(){
   const editingFinding=editingFindingId?state.findings.find(f=>f.id===editingFindingId):null;
   const descVal=document.getElementById('fDesc')?document.getElementById('fDesc').value:(editingFinding?editingFinding.description:'');
   const checklist=getChecklist();
-  const titleVal=fTitleSelected || (editingFinding?editingFinding.title:'') || state.titleTemplates[0] || '';
+  const titles=state.titleTemplatesBySite[state.siteId]||DEFAULT_TITLE_TEMPLATES;
+  const titleVal=fTitleSelected || (editingFinding?editingFinding.title:'') || titles[0] || '';
   fTitleSelected=titleVal;
-  const staffList=state.staffByFloor[state.floor]||[];
+  const staffList=(state.staffByAreaBySite[state.siteId]||{})[state.areaId]||[];
   const showCustomAssigned = fAssignedMode==='custom';
   openModal(`
     <div class="modal-head"><h3>${editingFinding?'Edit Finding':'Add Finding'}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     <div class="field-block">
       <label class="field-label">Title</label>
       <select class="select-input" id="fTitle">
-        ${state.titleTemplates.map(t=>`<option value="${t}" ${t===titleVal?'selected':''}>${t}</option>`).join('')}
+        ${titles.map(t=>`<option value="${t}" ${t===titleVal?'selected':''}>${t}</option>`).join('')}
       </select>
     </div>
     <div class="field-block">
-      <label class="field-label">Checklist / Area</label>
+      <label class="field-label">Checklist Item</label>
       ${fLockedItem
         ? `<div class="date-field" style="cursor:default;"><div>${fLockedItem.name}</div></div>`
         : checklist.length
           ? `<select class="select-input" id="fArea">${checklist.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select>`
-          : `<div class="lock-note">${ICONS.info} No checklist items exist for ${state.floor} yet.</div>`}
+          : `<div class="lock-note">${ICONS.info} No checklist items exist for ${currentAreaName()} yet.</div>`}
     </div>
     <div class="field-block">
       <label class="field-label">Severity</label>
@@ -2087,7 +2439,7 @@ function renderAddFindingModal(){
     </div>
     <div class="field-block"><label class="field-label">Description</label><textarea class="text-input" id="fDesc" rows="3" placeholder="Describe the finding...">${descVal}</textarea></div>
     <div class="field-block">
-      <label class="field-label">Assigned To (Optional) — ${state.floor}</label>
+      <label class="field-label">Assigned To (Optional) — ${currentAreaName()}</label>
       ${!showCustomAssigned ? `
         <select class="select-input" id="fAssignedSelect">
           <option value="">Not assigned</option>
@@ -2176,6 +2528,7 @@ function openReviewFindingModal(draft){
   `);
   document.getElementById('reviewBackBtn').onclick=()=>renderAddFindingModal();
   document.getElementById('reviewConfirmAddBtn').onclick=async()=>{
+    const siteId=state.siteId, areaId=state.areaId;
     let theFinding;
     if(draft.editingFindingId){
       theFinding=state.findings.find(x=>x.id===draft.editingFindingId);
@@ -2188,7 +2541,7 @@ function openReviewFindingModal(draft){
       const findingNo=`FA-${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}-${String(newId).slice(-4)}`;
       theFinding={
         id:newId, findingNo, title:draft.title, description:draft.description,
-        category:'', severity:draft.severity, floor:state.floor, area:draft.area,
+        category:'', severity:draft.severity, siteId, areaId, floor:currentAreaName(), area:draft.area,
         checklistItemId:draft.checklistItemId, assignedTo:draft.assignedTo,
         time:'Just now', color:'#6b7688',
         photos:{before:draft.photo, after:null},
@@ -2196,18 +2549,26 @@ function openReviewFindingModal(draft){
         resolvedBy:'', resolvedAt:null, verifiedBy:'', verifiedAt:null,
         resolutionStatus:'open', actionPlan:'',
       };
-      state.findings.unshift(theFinding);
+      if(!state.findingsBySite[siteId]) state.findingsBySite[siteId]={};
+      state.findingsBySite[siteId][theFinding.id]=theFinding;
+      recomputeFlatFindings();
     }
     if(draft.isNewStaffName){
-      addPendingStaff(draft.assignedTo, state.floor, state.username);
-      logActivity('Staff pending approval', `${draft.assignedTo} — ${state.floor}`);
+      addPendingStaff(siteId, draft.assignedTo, areaId, state.username);
+      logActivity(siteId, 'Staff pending approval', `${draft.assignedTo} — ${currentAreaName()}`);
     }
     fPhotoData=null;
     const returnItem=fLockedItem;
     editingFindingId=null; fLockedItem=null; fTitleSelected=null; fAssignedSelected=''; fAssignedMode='select';
     const btn=document.getElementById('reviewConfirmAddBtn');
     await runGuarded(btn,'Saving...',()=>saveFinding(theFinding));
-    logActivity(draft.editingFindingId?'Finding edited':'Finding created', `${theFinding.findingNo||''} — ${theFinding.title} (${theFinding.area})`);
+    if(returnItem){
+      const liveChecklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
+      const liveItem=liveChecklist.find(c=>c.id===returnItem.id);
+      if(liveItem){ const computed=computeItemStatus(liveItem); liveItem.status = computed==='unchecked'?'good':computed; }
+      await Promise.all([saveChecklistsForArea(siteId,areaId,liveChecklist), touchAuditSession(siteId,areaId)]);
+    }
+    logActivity(siteId, draft.editingFindingId?'Finding edited':'Finding created', `${theFinding.findingNo||''} — ${theFinding.title} (${theFinding.area})`);
     render();
     toast(draft.editingFindingId?'Finding updated':'Finding added');
     if(returnItem) openChecklistDetail(returnItem.id); else closeModal();
@@ -2302,8 +2663,8 @@ function openFindingDetail(id, cameFrom){
   if(verifyBtn) verifyBtn.onclick=async()=>{
     const patch={resolutionStatus:'verified', verifiedBy:state.username||'Unknown', verifiedAt:Date.now()};
     Object.assign(f,patch);
-    await runGuarded(verifyBtn,'Verifying...',()=>updateFinding(f.id,patch));
-    logActivity('Resolution verified', `${f.findingNo||''} — ${f.title}`);
+    await runGuarded(verifyBtn,'Verifying...',()=>updateFinding(f.siteId,f.id,patch));
+    logActivity(f.siteId, 'Resolution verified', `${f.findingNo||''} — ${f.title}`);
     closeModal();render();toast('Finding verified & closed');
   };
   const reopenBtn=document.getElementById('reopenBtn');
@@ -2311,8 +2672,8 @@ function openFindingDetail(id, cameFrom){
     const patch={resolutionStatus:'open', actionPlan:'', 'photos/after':null, resolvedBy:'', resolvedAt:null, verifiedBy:'', verifiedAt:null};
     f.resolutionStatus='open'; f.actionPlan=''; f.photos.after=null;
     f.resolvedBy=''; f.resolvedAt=null; f.verifiedBy=''; f.verifiedAt=null;
-    await runGuarded(reopenBtn,'Reopening...',()=>updateFinding(f.id,patch));
-    logActivity('Finding reopened', `${f.findingNo||''} — ${f.title}`);
+    await runGuarded(reopenBtn,'Reopening...',()=>updateFinding(f.siteId,f.id,patch));
+    logActivity(f.siteId, 'Finding reopened', `${f.findingNo||''} — ${f.title}`);
     closeModal();render();toast('Finding reopened');
   };
   if(isAdmin){
@@ -2325,8 +2686,8 @@ function openFindingDetail(id, cameFrom){
         if(newStatus==='open'){ patch.actionPlan=''; patch['photos/after']=null; patch.resolvedBy=''; patch.resolvedAt=null; patch.verifiedBy=''; patch.verifiedAt=null; }
         Object.assign(f,patch);
         if(patch['photos/after']!==undefined) f.photos.after=null;
-        await updateFinding(f.id,patch);
-        logActivity('Admin override', `Forced ${f.findingNo||''} — ${f.title} to ${newStatus}`);
+        await updateFinding(f.siteId,f.id,patch);
+        logActivity(f.siteId, 'Admin override', `Forced ${f.findingNo||''} — ${f.title} to ${newStatus}`);
         closeModal();render();toast(`Status forced to ${newStatus}`);
       };
     });
@@ -2335,7 +2696,7 @@ function openFindingDetail(id, cameFrom){
       openConfirmModal(`Archive "${f.title}"? It will be removed from active lists but can be restored later from the Archive.`,async()=>{
         const confirmBtn=document.getElementById('confirmOkBtn');
         await runGuarded(confirmBtn,'Archiving...',()=>archiveFinding(f,state.username));
-        logActivity('Finding deleted', `${f.findingNo||''} — ${f.title} (archived)`);
+        logActivity(f.siteId, 'Finding deleted', `${f.findingNo||''} — ${f.title} (archived)`);
         state.findings=state.findings.filter(x=>x.id!==f.id);
         closeModal();render();toast('Finding archived — restorable from Archive');
       },'Archive Finding',true);
@@ -2390,8 +2751,8 @@ function renderResolveForm(findingId){
     f.resolutionStatus='pending';
     resolvePhotoData=null;
     const btn=document.getElementById('submitResolveBtn');
-    await runGuarded(btn,'Submitting...',()=>updateFinding(f.id,patch));
-    logActivity('Resolution submitted', `${f.findingNo||''} — ${f.title}`);
+    await runGuarded(btn,'Submitting...',()=>updateFinding(f.siteId,f.id,patch));
+    logActivity(f.siteId, 'Resolution submitted', `${f.findingNo||''} — ${f.title}`);
     closeModal();render();
     toast('Resolution submitted — awaiting auditor verification');
   };
@@ -2413,7 +2774,7 @@ function renderReports(){
   const exportPdfBtn=document.getElementById('exportPdfBtn'); if(exportPdfBtn) exportPdfBtn.onclick=()=>exportReportPDF();
   const exportXlsxBtn=document.getElementById('exportXlsxBtn'); if(exportXlsxBtn) exportXlsxBtn.onclick=()=>exportReportCSV();
   const exportDateSelect=document.getElementById('exportDateSelect'); if(exportDateSelect) exportDateSelect.onchange=(e)=>{state.exportDateFilter=e.target.value;};
-  const exportFloorSelect=document.getElementById('exportFloorSelect'); if(exportFloorSelect) exportFloorSelect.onchange=(e)=>{state.exportFloorFilter=e.target.value;};
+  const exportSiteSelect=document.getElementById('exportSiteSelect'); if(exportSiteSelect) exportSiteSelect.onchange=(e)=>{state.exportSiteFilter=e.target.value;};
   const exportStatusSelect=document.getElementById('exportStatusSelect'); if(exportStatusSelect) exportStatusSelect.onchange=(e)=>{state.exportStatusFilter=e.target.value;};
   const exportAuditorSelect=document.getElementById('exportAuditorSelect'); if(exportAuditorSelect) exportAuditorSelect.onchange=(e)=>{state.exportAuditorFilter=e.target.value;};
 
@@ -2435,7 +2796,7 @@ function reportsListHTML(){
   ${state.reports.length===0 ? `<div class="card"><div class="empty-mini" style="padding:16px 0;">No reports yet — complete a daily audit and tap "Submit Audit" on the Daily Audit tab to generate one.</div></div>` : state.reports.map(r=>`
     <div class="card report-card" data-report="${r.id}">
       <div class="report-icon">${ICONS.clipboard}</div>
-      <div style="flex:1;"><div class="report-date">${r.date}</div><div class="report-sub">${r.floor} · ${r.completedItems}/${r.totalItems} areas checked · ${r.findingsCount} findings</div></div>
+      <div style="flex:1;"><div class="report-date">${r.date}</div><div class="report-sub">${(state.sites[r.siteId]||{}).name||'Unknown Site'} · ${r.floor} · ${r.completedItems}/${r.totalItems} areas checked · ${r.findingsCount} findings</div></div>
       <div class="chevron">${ICONS.chevronR}</div>
     </div>`).join('')}
   `;
@@ -2444,10 +2805,11 @@ function openReportPreview(reportId){
   const r=state.reports.find(x=>x.id===reportId);
   if(!r) return;
   const findings=reportFindings(r);
+  const siteName=(state.sites[r.siteId]||{}).name||'Unknown Site';
   openModal(`
     <div class="modal-head"><h3>Audit Report</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     <div style="font-weight:700;font-size:15px;margin-bottom:4px;">${r.date} — Submitted by: ${r.submittedBy||'Unknown'}</div>
-    <div style="font-size:13px;color:var(--text-600);font-weight:600;margin-bottom:16px;">Warehouse/Area: <u>${r.floor}</u></div>
+    <div style="font-size:13px;color:var(--text-600);font-weight:600;margin-bottom:16px;">Site: <u>${siteName}</u> · Area: <u>${r.floor}</u></div>
     <div class="card-title">Audit Findings</div>
     ${findings.length===0 ? `<div class="empty-mini" style="padding:16px 0;">No findings logged in this audit</div>` : findings.map(f=>`
       <div class="card" style="cursor:pointer;border-left:4px solid ${sevColor(f.severity)};" data-finding="${f.id}">
@@ -2467,11 +2829,10 @@ function openReportPreview(reportId){
   document.querySelectorAll('#modalSheet [data-finding]').forEach(el=>{ el.onclick=()=>openFindingDetail(parseInt(el.dataset.finding),()=>openReportPreview(r.id)); });
   const deleteReportBtn=document.getElementById('deleteReportBtn');
   if(deleteReportBtn) deleteReportBtn.onclick=()=>{
-    openConfirmModal(`Archive the ${r.date} — ${r.floor} report? It can be restored later from the Archive.`,async()=>{
+    openConfirmModal(`Archive the ${r.date} — ${siteName} / ${r.floor} report? It can be restored later from the Archive.`,async()=>{
       const confirmBtn=document.getElementById('confirmOkBtn');
       await runGuarded(confirmBtn,'Archiving...',()=>archiveReport(r,state.username));
-      logActivity('Report deleted', `${r.date} — ${r.floor} (archived)`);
-      state.reports=state.reports.filter(x=>x.id!==r.id);
+      logActivity(r.siteId, 'Report deleted', `${r.date} — ${r.floor} (archived)`);
       closeModal();render();toast('Report archived — restorable from Archive');
     },'Archive Report',true);
   };
@@ -2484,6 +2845,7 @@ function summaryHTML(){
   const medium=state.findings.filter(f=>f.severity==='Medium').length;
   const low=state.findings.filter(f=>f.severity==='Low').length;
   const pct=(n)=>total?Math.round((n/total)*100):0;
+  const siteEntries=Object.entries(state.sites);
   return `
   <div class="filter-row"><span>${state.reportsFilter}</span>${ICONS.calendar}</div>
   <div class="card"><div class="card-title" style="text-transform:none;font-size:13px;">Findings Summary</div>
@@ -2505,9 +2867,9 @@ function summaryHTML(){
         <option value="all" ${state.exportDateFilter==='all'?'selected':''}>All Dates</option>
         ${[...new Set(state.reports.map(r=>r.date))].map(d=>`<option value="${d}" ${state.exportDateFilter===d?'selected':''}>${d}</option>`).join('')}
       </select>
-      <select class="select-input" id="exportFloorSelect" style="flex:1;">
-        <option value="all" ${state.exportFloorFilter==='all'?'selected':''}>All Floors</option>
-        ${FLOORS.map(f=>`<option value="${f}" ${state.exportFloorFilter===f?'selected':''}>${f}</option>`).join('')}
+      <select class="select-input" id="exportSiteSelect" style="flex:1;">
+        <option value="all" ${state.exportSiteFilter==='all'?'selected':''}>All Sites</option>
+        ${siteEntries.map(([id,s])=>`<option value="${id}" ${state.exportSiteFilter===id?'selected':''}>${s.name}</option>`).join('')}
       </select>
     </div>
     <div style="display:flex;gap:10px;margin-bottom:14px;">
@@ -2531,7 +2893,7 @@ function summaryHTML(){
 function getFilteredReports(){
   return state.reports.filter(r=>
     (state.exportDateFilter==='all' || r.date===state.exportDateFilter) &&
-    (state.exportFloorFilter==='all' || r.floor===state.exportFloorFilter) &&
+    (state.exportSiteFilter==='all' || r.siteId===state.exportSiteFilter) &&
     (state.exportAuditorFilter==='all' || r.submittedBy===state.exportAuditorFilter)
   );
 }
@@ -2542,7 +2904,8 @@ function getFilteredReportFindings(r){
 }
 function exportFileSuffix(){
   const d=state.exportDateFilter==='all' ? '' : `_${state.exportDateFilter.replace(/[, ]+/g,'-')}`;
-  const f=state.exportFloorFilter==='all' ? '' : `_${state.exportFloorFilter.replace(/\s+/g,'-')}`;
+  const siteName=state.exportSiteFilter==='all' ? '' : (state.sites[state.exportSiteFilter]||{}).name||'';
+  const f=siteName ? `_${siteName.replace(/\s+/g,'-')}` : '';
   const s=state.exportStatusFilter==='all' ? '' : `_${state.exportStatusFilter}`;
   const a=state.exportAuditorFilter==='all' ? '' : `_${state.exportAuditorFilter.replace(/\s+/g,'-')}`;
   return d+f+s+a;
@@ -2550,13 +2913,14 @@ function exportFileSuffix(){
 function hasExportableData(){ return getFilteredReports().length>0; }
 function exportReportCSV(){
   if(!hasExportableData()){toast('No reports match that filter');return;}
-  let csv='Date,Submitted By,Warehouse/Area,Checklists,Title,Description,Image,Resolution,Action Plan,Image\n';
+  let csv='Site,Date,Submitted By,Area,Checklists,Title,Description,Image,Resolution,Action Plan,Image\n';
   getFilteredReports().forEach(r=>{
     const dateStr=fmtDateMMDDYY(r.date);
     const submitter=r.submittedBy||'Unknown';
+    const siteName=(state.sites[r.siteId]||{}).name||'Unknown Site';
     const findings=getFilteredReportFindings(r);
     if(findings.length===0){
-      csv+=`"${dateStr}","${submitter}","${r.floor}","No findings logged in this audit",,,,,,\n`;
+      csv+=`"${siteName}","${dateStr}","${submitter}","${r.floor}","No findings logged in this audit",,,,,,\n`;
     }else{
       findings.forEach(f=>{
         const desc=(f.description||'').replace(/"/g,'""');
@@ -2564,7 +2928,7 @@ function exportReportCSV(){
         const resLabel=f.resolutionStatus==='verified'?'Verified':f.resolutionStatus==='pending'?'Pending Verification':'Open';
         const img1=f.photos.before?'Photo attached':'No photo';
         const img2=f.photos.after?'Photo attached':'No photo';
-        csv+=`"${dateStr}","${submitter}","${r.floor}","${f.area}","${f.title}","${desc}",${img1},${resLabel},"${plan}",${img2}\n`;
+        csv+=`"${siteName}","${dateStr}","${submitter}","${r.floor}","${f.area}","${f.title}","${desc}",${img1},${resLabel},"${plan}",${img2}\n`;
       });
     }
   });
@@ -2573,7 +2937,7 @@ function exportReportCSV(){
   const a=document.createElement('a'); a.href=url; a.download=`warehouse-audit-report${exportFileSuffix()}.csv`;
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  logActivity('Report exported', `CSV export${exportFileSuffix()||' (all)'}`);
+  logActivity(null, 'Report exported', `CSV export${exportFileSuffix()||' (all)'}`);
   toast('Excel (CSV) file downloaded');
 }
 function detectImgFormat(dataUrl){
@@ -2593,26 +2957,26 @@ function exportReportPDF(){
   const doc=new jsPDF({orientation:'landscape'});
   const pageH=doc.internal.pageSize.getHeight();
   const marginX=10;
-  // 0 Date | 1 Submitted By | 2 Warehouse/Area | 3 Checklists | 4 Title | 5 Description | 6 Image || 7 Resolution | 8 Action Plan | 9 Image
-  const colW=[16,24,20,26,28,55,20, 18,38,20];
+  // 0 Site | 1 Date | 2 Submitted By | 3 Area | 4 Checklists | 5 Title | 6 Description | 7 Image || 8 Resolution | 9 Action Plan | 10 Image
+  const colW=[20,14,22,18,22,24,45,16, 16,32,16];
   const colX=[marginX];
   for(let i=0;i<colW.length-1;i++) colX.push(colX[i]+colW[i]);
   const tableW=colW.reduce((a,b)=>a+b,0);
-  const orangeSpan=colW.slice(0,7).reduce((a,b)=>a+b,0);
-  const greenSpan=colW.slice(7).reduce((a,b)=>a+b,0);
+  const orangeSpan=colW.slice(0,8).reduce((a,b)=>a+b,0);
+  const greenSpan=colW.slice(8).reduce((a,b)=>a+b,0);
 
   function drawTableHeader(y){
     doc.setFillColor(239,139,59);
     doc.rect(colX[0],y,orangeSpan,6,'F');
     doc.setFillColor(29,154,98);
-    doc.rect(colX[7],y,greenSpan,6,'F');
+    doc.rect(colX[8],y,greenSpan,6,'F');
     doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(8);
     doc.text('Audit Findings',colX[0]+2,y+4.2);
-    doc.text('Resolution',colX[7]+2,y+4.2);
+    doc.text('Resolution',colX[8]+2,y+4.2);
     y+=6;
-    const heads=['Date','Submitted By','Warehouse/Area','Checklists','Title','Description','Image','Resolution','Action Plan','Image'];
+    const heads=['Site','Date','Submitted By','Area','Checklists','Title','Description','Image','Resolution','Action Plan','Image'];
     doc.setFillColor(253,238,224); doc.rect(colX[0],y,orangeSpan,6,'F');
-    doc.setFillColor(228,246,237); doc.rect(colX[7],y,greenSpan,6,'F');
+    doc.setFillColor(228,246,237); doc.rect(colX[8],y,greenSpan,6,'F');
     doc.setTextColor(20,24,43); doc.setFont('helvetica','bold'); doc.setFontSize(7);
     heads.forEach((h,i)=>doc.text(h,colX[i]+2,y+4.2));
     return y+6;
@@ -2633,56 +2997,60 @@ function exportReportPDF(){
 
   rows.forEach(({r,f})=>{
     const dateStr=fmtDateMMDDYY(r.date);
+    const siteName=(state.sites[r.siteId]||{}).name||'Unknown';
     if(!f){
       const rowH=8;
       if(y+rowH>pageH-12){ doc.addPage(); y=14; y=drawTableHeader(y); }
       doc.setDrawColor(225,230,240); doc.rect(colX[0],y,tableW,rowH);
       for(let i=1;i<colX.length;i++) doc.line(colX[i],y,colX[i],y+rowH);
       doc.setTextColor(18,24,43);doc.setFont('helvetica','normal');doc.setFontSize(6.5);
-      doc.text(dateStr,colX[0]+2,y+5);
-      doc.text(r.submittedBy||'Unknown',colX[1]+2,y+5,{maxWidth:colW[1]-4});
-      doc.text(r.floor,colX[2]+2,y+5,{maxWidth:colW[2]-4});
+      doc.text(siteName,colX[0]+2,y+5,{maxWidth:colW[0]-4});
+      doc.text(dateStr,colX[1]+2,y+5);
+      doc.text(r.submittedBy||'Unknown',colX[2]+2,y+5,{maxWidth:colW[2]-4});
+      doc.text(r.floor,colX[3]+2,y+5,{maxWidth:colW[3]-4});
       doc.setTextColor(90,100,120);
-      doc.text('No findings logged in this audit',colX[3]+2,y+5,{maxWidth:colW[3]+colW[4]+colW[5]-4});
+      doc.text('No findings logged in this audit',colX[4]+2,y+5,{maxWidth:colW[4]+colW[5]+colW[6]-4});
       y+=rowH;
       return;
     }
     doc.setFont('helvetica','normal').setFontSize(6.5);
-    const descLines=doc.splitTextToSize(f.description||'—',colW[5]-4);
-    const planLines=doc.splitTextToSize(f.actionPlan||'—',colW[8]-4);
-    const titleLines=doc.splitTextToSize(f.title,colW[4]-4);
-    const areaLines=doc.splitTextToSize(f.area,colW[3]-4);
+    const descLines=doc.splitTextToSize(f.description||'—',colW[6]-4);
+    const planLines=doc.splitTextToSize(f.actionPlan||'—',colW[9]-4);
+    const titleLines=doc.splitTextToSize(f.title,colW[5]-4);
+    const areaLines=doc.splitTextToSize(f.area,colW[4]-4);
     const maxLines=Math.max(descLines.length,planLines.length,titleLines.length,areaLines.length,1);
     const rowH=Math.max(maxLines*3.2+4,18);
     if(y+rowH>pageH-12){ doc.addPage(); y=14; y=drawTableHeader(y); }
     doc.setDrawColor(225,230,240); doc.rect(colX[0],y,tableW,rowH);
     for(let i=1;i<colX.length;i++) doc.line(colX[i],y,colX[i],y+rowH);
     doc.setTextColor(18,24,43);doc.setFont('helvetica','normal');doc.setFontSize(6.5);
-    doc.text(dateStr,colX[0]+2,y+4.5);
-    doc.text(r.submittedBy||'Unknown',colX[1]+2,y+4.5,{maxWidth:colW[1]-4});
-    doc.text(r.floor,colX[2]+2,y+4.5,{maxWidth:colW[2]-4});
-    doc.text(areaLines,colX[3]+2,y+4.5);
-    doc.text(titleLines,colX[4]+2,y+4.5);
-    doc.text(descLines,colX[5]+2,y+4.5);
+    doc.text(siteName,colX[0]+2,y+4.5,{maxWidth:colW[0]-4});
+    doc.text(dateStr,colX[1]+2,y+4.5);
+    doc.text(r.submittedBy||'Unknown',colX[2]+2,y+4.5,{maxWidth:colW[2]-4});
+    doc.text(r.floor,colX[3]+2,y+4.5,{maxWidth:colW[3]-4});
+    doc.text(areaLines,colX[4]+2,y+4.5);
+    doc.text(titleLines,colX[5]+2,y+4.5);
+    doc.text(descLines,colX[6]+2,y+4.5);
     const fmt1=detectImgFormat(f.photos.before);
-    if(fmt1){ try{ doc.addImage(f.photos.before,fmt1,colX[6]+2,y+2,colW[6]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[6]+2,y+4.5,{maxWidth:colW[6]-4}); } }
-    else doc.text('No photo',colX[6]+2,y+4.5);
+    if(fmt1){ try{ doc.addImage(f.photos.before,fmt1,colX[7]+2,y+2,colW[7]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[7]+2,y+4.5,{maxWidth:colW[7]-4}); } }
+    else doc.text('No photo',colX[7]+2,y+4.5);
     const resLabel=f.resolutionStatus==='verified'?'Verified':f.resolutionStatus==='pending'?'Pending':'Open';
-    doc.text(resLabel,colX[7]+2,y+4.5);
-    doc.text(planLines,colX[8]+2,y+4.5);
+    doc.text(resLabel,colX[8]+2,y+4.5);
+    doc.text(planLines,colX[9]+2,y+4.5);
     const fmt2=detectImgFormat(f.photos.after);
-    if(fmt2){ try{ doc.addImage(f.photos.after,fmt2,colX[9]+2,y+2,colW[9]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[9]+2,y+4.5,{maxWidth:colW[9]-4}); } }
-    else doc.text('No photo',colX[9]+2,y+4.5);
+    if(fmt2){ try{ doc.addImage(f.photos.after,fmt2,colX[10]+2,y+2,colW[10]-4,Math.min(rowH-4,16)); } catch(e){ doc.text('Photo attached',colX[10]+2,y+4.5,{maxWidth:colW[10]-4}); } }
+    else doc.text('No photo',colX[10]+2,y+4.5);
     y+=rowH;
   });
   doc.save(`warehouse-audit-report${exportFileSuffix()}.pdf`);
-  logActivity('Report exported', `PDF export${exportFileSuffix()||' (all)'}`);
+  logActivity(null, 'Report exported', `PDF export${exportFileSuffix()||' (all)'}`);
   toast('PDF downloaded');
 }
 
 /* ============================================================ DASHBOARD TAB ============================================================ */
 let trendChartInstance=null;
-function computeWeekdayTrend(){
+function computeWeekdayTrend(list){
+  list=list||state.findings;
   const dayLabels=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const now=new Date();
   const dow=now.getDay();
@@ -2693,28 +3061,30 @@ function computeWeekdayTrend(){
     const d=new Date(monday); d.setDate(d.getDate()+i);
     const dEnd=new Date(d); dEnd.setDate(dEnd.getDate()+1);
     labels.push(dayLabels[d.getDay()]);
-    counts.push(state.findings.filter(f=>f.createdAt>=d.getTime() && f.createdAt<dEnd.getTime()).length);
+    counts.push(list.filter(f=>f.createdAt>=d.getTime() && f.createdAt<dEnd.getTime()).length);
   }
-  if(counts.every(c=>c===0) && state.findings.length>0){
+  if(counts.every(c=>c===0) && list.length>0){
     const labels2=[]; const counts2=[];
     const todayStart=new Date(); todayStart.setHours(0,0,0,0);
     for(let i=6;i>=0;i--){
       const d=new Date(todayStart); d.setDate(d.getDate()-i);
       const dEnd=new Date(d); dEnd.setDate(dEnd.getDate()+1);
       labels2.push(d.toLocaleDateString('en-US',{month:'short',day:'numeric'}));
-      counts2.push(state.findings.filter(f=>f.createdAt>=d.getTime() && f.createdAt<dEnd.getTime()).length);
+      counts2.push(list.filter(f=>f.createdAt>=d.getTime() && f.createdAt<dEnd.getTime()).length);
     }
     return {labels:labels2,counts:counts2,fallback:true};
   }
   return {labels,counts,fallback:false};
 }
-function computeFloorTrend(){
+function computeSiteTrend(list){
+  list=list||state.findings;
   const counts={};
-  FLOORS.forEach(f=>counts[f]=0);
-  state.findings.forEach(f=>{ if(counts[f.floor]!==undefined) counts[f.floor]++; });
+  Object.keys(state.sites).forEach(id=>counts[id]=0);
+  list.forEach(f=>{ if(counts[f.siteId]!==undefined) counts[f.siteId]++; });
   return counts;
 }
-function computeKPIs(){
+function computeKPIs(list){
+  list=list||state.findings;
   const now=new Date();
   const todayStart=new Date(now); todayStart.setHours(0,0,0,0);
   const yestStart=new Date(todayStart); yestStart.setDate(yestStart.getDate()-1);
@@ -2723,13 +3093,13 @@ function computeKPIs(){
   const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
 
   const inRange=(f,start,end)=>f.createdAt>=start.getTime() && (!end || f.createdAt<end.getTime());
-  const todayCount=state.findings.filter(f=>inRange(f,todayStart)).length;
-  const yesterdayCount=state.findings.filter(f=>inRange(f,yestStart,todayStart)).length;
-  const weekCount=state.findings.filter(f=>inRange(f,weekStart)).length;
-  const monthCount=state.findings.filter(f=>inRange(f,monthStart)).length;
-  const overdueCount=state.findings.filter(f=>computeDueInfo(f).cls==='overdue').length;
+  const todayCount=list.filter(f=>inRange(f,todayStart)).length;
+  const yesterdayCount=list.filter(f=>inRange(f,yestStart,todayStart)).length;
+  const weekCount=list.filter(f=>inRange(f,weekStart)).length;
+  const monthCount=list.filter(f=>inRange(f,monthStart)).length;
+  const overdueCount=list.filter(f=>computeDueInfo(f).cls==='overdue').length;
 
-  const resolved=state.findings.filter(f=>f.resolvedAt);
+  const resolved=list.filter(f=>f.resolvedAt);
   let avgResLabel='—';
   if(resolved.length){
     const avgMs=resolved.reduce((sum,f)=>sum+(f.resolvedAt-f.createdAt),0)/resolved.length;
@@ -2738,14 +3108,16 @@ function computeKPIs(){
   }
 
   const areaCounts={};
-  state.findings.forEach(f=>{areaCounts[f.area]=(areaCounts[f.area]||0)+1;});
+  list.forEach(f=>{areaCounts[f.area]=(areaCounts[f.area]||0)+1;});
   const areaEntries=Object.entries(areaCounts).sort((a,b)=>b[1]-a[1]);
   const worstArea=areaEntries.length?areaEntries[0][0]:'—';
   const mostCommon=worstArea;
 
   let bestArea='—';
   const allItems=[];
-  FLOORS.forEach(floor=>(state.checklistsByFloor[floor]||[]).forEach(item=>allItems.push(item.name)));
+  Object.keys(state.checklistsByArea).forEach(siteId=>{
+    Object.values(state.checklistsByArea[siteId]||{}).forEach(items=>(items||[]).forEach(item=>allItems.push(item.name)));
+  });
   const zeroFindingItems=allItems.filter(name=>!areaCounts[name]);
   if(zeroFindingItems.length) bestArea=zeroFindingItems[0];
   else if(areaEntries.length) bestArea=areaEntries[areaEntries.length-1][0];
@@ -2753,27 +3125,30 @@ function computeKPIs(){
   return {todayCount,yesterdayCount,weekCount,monthCount,overdueCount,avgResLabel,mostCommon,worstArea,bestArea};
 }
 function renderDashboard(){
-  const total=state.findings.length;
-  const open=state.findings.filter(f=>f.resolutionStatus!=='verified').length;
-  const closed=state.findings.filter(f=>f.resolutionStatus==='verified').length;
-  const highSeverity=state.findings.filter(f=>f.severity==='High').length;
-  const medSeverity=state.findings.filter(f=>f.severity==='Medium').length;
-  const lowSeverity=state.findings.filter(f=>f.severity==='Low').length;
-  const pendingVerification=state.findings.filter(f=>f.resolutionStatus==='pending').length;
-  const kpi=computeKPIs();
-  const trend=computeWeekdayTrend();
+  const dashFindings = state.filterSite==='all' ? state.findings : state.findings.filter(f=>f.siteId===state.filterSite);
+  const total=dashFindings.length;
+  const open=dashFindings.filter(f=>f.resolutionStatus!=='verified').length;
+  const closed=dashFindings.filter(f=>f.resolutionStatus==='verified').length;
+  const highSeverity=dashFindings.filter(f=>f.severity==='High').length;
+  const medSeverity=dashFindings.filter(f=>f.severity==='Medium').length;
+  const lowSeverity=dashFindings.filter(f=>f.severity==='Low').length;
+  const pendingVerification=dashFindings.filter(f=>f.resolutionStatus==='pending').length;
+  const kpi=computeKPIs(dashFindings);
+  const trend=computeWeekdayTrend(dashFindings);
   const ONLINE_WINDOW_MS=5*60*1000;
   const onlineCount=Object.values(state.userRoles||{}).filter(u=>u.lastSeen && (Date.now()-u.lastSeen)<ONLINE_WINDOW_MS).length;
 
   const areaCounts={};
-  state.findings.forEach(f=>{areaCounts[f.area]=(areaCounts[f.area]||0)+1;});
+  dashFindings.forEach(f=>{areaCounts[f.area]=(areaCounts[f.area]||0)+1;});
   const areaEntries=Object.entries(areaCounts).sort((a,b)=>b[1]-a[1]);
   const maxAreaCount=areaEntries.length?areaEntries[0][1]:1;
 
-  const assignedNames=[...new Set(state.findings.map(f=>f.assignedTo).filter(Boolean))].sort();
+  const assignedNames=[...new Set(dashFindings.map(f=>f.assignedTo).filter(Boolean))].sort();
   const filtered=getFilteredFindings();
+  const siteEntries=Object.entries(state.sites);
 
   document.getElementById('content').innerHTML=`
+  <div class="filter-row" style="cursor:default;"><span>${state.filterSite==='all'?'All Sites':(state.sites[state.filterSite]||{}).name||'Unknown Site'}</span></div>
   <div class="card"><div class="card-title">Overview</div>
     <div class="overview-grid">
       <div class="ov-cell"><div class="ov-icon" style="background:var(--blue-050);color:var(--blue-600);">${ICONS.clipboard}</div><div><div class="ov-num">${total}</div><div class="ov-lbl">Total Findings</div></div></div>
@@ -2811,20 +3186,29 @@ function renderDashboard(){
 
   <div class="card"><div class="card-title">${trend.fallback?'Findings Trend (Last 7 Days)':'Findings Trend (This Week)'}</div><div style="height:150px;"><canvas id="trendChart"></canvas></div></div>
 
-  <div class="card"><div class="card-title">Findings by Floor</div>
-    ${(()=>{ const fc=computeFloorTrend(); const maxFc=Math.max(1,...Object.values(fc));
-      return FLOORS.map(f=>`<div class="area-bar-row"><div class="area-bar-label"><span>${f}</span><span>${fc[f]}</span></div><div class="area-bar-track"><div class="area-bar-fill" style="width:${Math.round(fc[f]/maxFc*100)}%"></div></div></div>`).join('');
+  ${state.filterSite==='all' && siteEntries.length>0 ? `
+  <div class="card"><div class="card-title">Findings by Site</div>
+    ${(()=>{ const sc=computeSiteTrend(dashFindings); const maxSc=Math.max(1,...Object.values(sc));
+      return siteEntries.map(([id,s])=>`<div class="area-bar-row"><div class="area-bar-label"><span>${s.name}</span><span>${sc[id]||0}</span></div><div class="area-bar-track"><div class="area-bar-fill" style="width:${Math.round((sc[id]||0)/maxSc*100)}%"></div></div></div>`).join('');
     })()}
-  </div>
+  </div>` : ''}
 
-  <div class="card"><div class="card-title">Checklist Completion by Floor</div>
-    ${FLOORS.map(floor=>{
-      const list=state.checklistsByFloor[floor]||[];
-      const t=list.length; const c=list.filter(x=>x.status!=='unchecked').length;
-      const p=t?Math.round(c/t*100):0;
-      return `<div class="area-bar-row"><div class="area-bar-label"><span>${floor}</span><span>${p}%</span></div><div class="area-bar-track"><div class="area-bar-fill" style="width:${p}%"></div></div></div>`;
-    }).join('')}
-  </div>
+  ${(()=>{
+    const rows=[];
+    const siteIdsToShow = state.filterSite==='all' ? state.accessibleSiteIds : [state.filterSite];
+    siteIdsToShow.forEach(sid=>{
+      const areas=Object.entries(state.areasBySite[sid]||{});
+      areas.forEach(([aid,a])=>{
+        const list=(state.checklistsByArea[sid]||{})[aid]||[];
+        const t=list.length; const c=list.filter(x=>x.status!=='unchecked').length;
+        rows.push({label: siteIdsToShow.length>1 ? `${(state.sites[sid]||{}).name} — ${a.name}` : a.name, pct: t?Math.round(c/t*100):0});
+      });
+    });
+    if(rows.length===0) return '';
+    return `<div class="card"><div class="card-title">Checklist Completion by Area</div>
+      ${rows.map(r=>`<div class="area-bar-row"><div class="area-bar-label"><span>${r.label}</span><span>${r.pct}%</span></div><div class="area-bar-track"><div class="area-bar-fill" style="width:${r.pct}%"></div></div></div>`).join('')}
+    </div>`;
+  })()}
 
   <div class="card"><div class="card-title">Findings by Area</div>
     ${areaEntries.length===0 ? `<div class="empty-mini" style="padding:6px 0;">No findings yet</div>` : areaEntries.map(([area,count])=>`
@@ -2853,9 +3237,9 @@ function renderDashboard(){
       <option value="month" ${state.filterDate==='month'?'selected':''}>This Month</option>
       <option value="overdue" ${state.filterDate==='overdue'?'selected':''}>Overdue</option>
     </select>
-    <select class="select-input" id="filterFloorSel">
-      <option value="all" ${state.filterFloor==='all'?'selected':''}>Floor: All</option>
-      ${FLOORS.map(f=>`<option value="${f}" ${state.filterFloor===f?'selected':''}>${f}</option>`).join('')}
+    <select class="select-input" id="filterSiteSel">
+      <option value="all" ${state.filterSite==='all'?'selected':''}>Site: All</option>
+      ${siteEntries.map(([id,s])=>`<option value="${id}" ${state.filterSite===id?'selected':''}>${s.name}</option>`).join('')}
     </select>
     <select class="select-input" id="filterAssignedSel" style="grid-column:1 / -1;">
       <option value="all" ${state.filterAssigned==='all'?'selected':''}>Assigned To: All</option>
@@ -2872,7 +3256,7 @@ function renderDashboard(){
   document.getElementById('filterStatusSel').onchange=(e)=>{ state.filterStatus=e.target.value; renderDashboard(); };
   document.getElementById('filterSeveritySel').onchange=(e)=>{ state.filterSeverity=e.target.value; renderDashboard(); };
   document.getElementById('filterDateSel').onchange=(e)=>{ state.filterDate=e.target.value; renderDashboard(); };
-  document.getElementById('filterFloorSel').onchange=(e)=>{ state.filterFloor=e.target.value; renderDashboard(); };
+  document.getElementById('filterSiteSel').onchange=(e)=>{ state.filterSite=e.target.value; renderDashboard(); };
   document.getElementById('filterAssignedSel').onchange=(e)=>{ state.filterAssigned=e.target.value; renderDashboard(); };
 
   const ctx=document.getElementById('trendChart');
@@ -2884,8 +3268,6 @@ function renderDashboard(){
   });
 }
 function renderDashboardFindingsOnly(){
-  const filtered=getFilteredFindings();
-  const listEls=document.querySelectorAll('.content > .card.finding-card, .content > .empty-mini');
   // Simplest reliable approach: just re-render whole dashboard (search is infrequent typing, acceptable cost)
   renderDashboard();
   const input=document.getElementById('dashSearchInput');
