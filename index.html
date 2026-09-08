@@ -181,6 +181,8 @@
   .sev-opt.sel-Low.selected{border-color:var(--amber-400);background:var(--amber-050);color:#A67910;}
 
   .toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--navy-900);color:#fff;padding:12px 20px;border-radius:999px;font-size:13.5px;font-weight:600;z-index:200;opacity:0;pointer-events:none;transition:opacity .25s ease, transform .25s ease;box-shadow:0 10px 30px rgba(0,0,0,.25);white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis;}
+  .toast.interactive{pointer-events:auto;}
+  .toast-undo-btn{background:none;border:none;color:var(--orange-400,#F5A96B);font-weight:800;font-size:13.5px;margin-left:12px;cursor:pointer;text-decoration:underline;padding:0;}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
 
   .lock-note{display:flex;gap:8px;align-items:flex-start;background:var(--blue-050);color:var(--blue-600);border-radius:var(--radius-m);padding:10px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px;line-height:1.4;}
@@ -580,11 +582,13 @@ const state = {
   notifOpen:false,
   siteDropdownOpen:false,
   areaDropdownOpen:false,
-  auditDate:todayISO(),
   sites:{},                // { [siteId]: {name,createdAt,createdBy,active} } — broadly readable, admin-writable
   areasBySite:{},           // { [siteId]: { [areaId]: {name,order,createdAt} } } — broadly readable, admin-writable
   siteId:null,              // the Site currently being worked in (audit / reports / dashboard context when scoped)
   areaId:null,              // the Area currently being audited
+  auditStarted:false,       // has the auditor tapped "Start Audit" for the current Area
+  pickedItemId:null,        // the checklist item currently being audited within this Area
+  itemDraftFindingIds:[],   // findings logged so far for the item currently being audited, before Review & Submit
   accessibleSiteIds:[],     // computed: sites this signed-in user may read/write (all sites if admin)
   notifications:[],
   checklistsByArea:{},      // { [siteId]: { [areaId]: [items] } }
@@ -592,8 +596,7 @@ const state = {
   findings:[],              // flattened across accessible sites, kept for compatibility with existing render/filter code
   reportsBySite:{},
   reports:[],
-  areaLastSubmitted:{},     // { [siteId]: { [areaId]: timestamp } }
-  auditSessionsBySite:{},   // { [siteId]: { [areaId]: {startedBy,startedByUid,startedAt,checkedCount,findingsCount} } }
+  areaLastSubmitted:{},     // { [siteId]: { [areaId]: timestamp } } — kept for legacy compatibility, unused by the per-item flow
   reportsFilter:'This Week',
   reportsTab:'reports',
   dashSearch:'',
@@ -659,7 +662,6 @@ function setChecklist(arr){
        findings/{siteId}/            { [findingId]: finding }                                       — per-site gated
        reports/{siteId}/             { [reportId]: report }                                         — per-site gated
        areaLastSubmitted/{siteId}/   { [areaId]: timestamp }                                        — per-site gated
-       auditSessions/{siteId}/       { [areaId]: {startedBy,startedByUid,startedAt,checkedCount,findingsCount} | null } — per-site gated
        titleTemplatesBySite/{siteId} [titles]                                                       — per-site gated
        staffByArea/{siteId}/         { [areaId]: [names] }                                          — per-site gated
        pendingStaff/{siteId}/        { [id]: {...} }                                                — per-site gated
@@ -685,7 +687,7 @@ let db=null;
 let auth=null;
 let secondaryApp=null;      // isolated Firebase app instance so Admin can create accounts without being signed out of their own session
 let refs={};                // top-level refs that don't depend on which sites are accessible (sites, areasBySite, userRoles, meta, users, adminActivityLog, archive roots)
-let siteListeners={};       // { [siteId]: { findings, reports, checklists, areaLastSubmitted, auditSessions, titleTemplates, staffByArea, pendingStaff, activityLog, archiveFindings, archiveReports } } — dynamically attached/detached per accessible site
+let siteListeners={};       // { [siteId]: { findings, reports, checklists, areaLastSubmitted, titleTemplates, staffByArea, pendingStaff, activityLog, archiveFindings, archiveReports } } — dynamically attached/detached per accessible site
 let listenersAttached=false;
 let appDataLoaded=false;
 let myRoleRef=null;
@@ -896,7 +898,6 @@ function attachSiteListeners(siteId){
     reports:db.ref(`${base}/reports/${siteId}`),
     checklists:db.ref(`${base}/checklistsByArea/${siteId}`),
     areaLastSubmitted:db.ref(`${base}/areaLastSubmitted/${siteId}`),
-    auditSessions:db.ref(`${base}/auditSessions/${siteId}`),
     titleTemplates:db.ref(`${base}/titleTemplatesBySite/${siteId}`),
     staffByArea:db.ref(`${base}/staffByArea/${siteId}`),
     pendingStaff:db.ref(`${base}/pendingStaff/${siteId}`),
@@ -908,7 +909,6 @@ function attachSiteListeners(siteId){
   l.reports.on('value',snap=>{ state.reportsBySite[siteId]=snap.val()||{}; recomputeFlatReports(); rerenderIfIdle(); });
   l.checklists.on('value',snap=>{ state.checklistsByArea[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.areaLastSubmitted.on('value',snap=>{ state.areaLastSubmitted[siteId]=snap.val()||{}; rerenderIfIdle(); });
-  l.auditSessions.on('value',snap=>{ state.auditSessionsBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.titleTemplates.on('value',snap=>{ const d=snap.val(); state.titleTemplatesBySite[siteId]=(Array.isArray(d)&&d.length)?d:DEFAULT_TITLE_TEMPLATES.slice(); rerenderIfIdle(); });
   l.staffByArea.on('value',snap=>{ state.staffByAreaBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.pendingStaff.on('value',snap=>{ state.pendingStaffBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
@@ -922,7 +922,7 @@ function detachSiteListeners(siteId){
   if(!l) return;
   Object.values(l).forEach(ref=>ref.off());
   delete siteListeners[siteId];
-  ['findingsBySite','reportsBySite','checklistsByArea','areaLastSubmitted','auditSessionsBySite','titleTemplatesBySite','staffByAreaBySite','pendingStaffBySite','activityLogBySite','archivedFindingsBySite','archivedReportsBySite'].forEach(k=>delete state[k][siteId]);
+  ['findingsBySite','reportsBySite','checklistsByArea','areaLastSubmitted','titleTemplatesBySite','staffByAreaBySite','pendingStaffBySite','activityLogBySite','archivedFindingsBySite','archivedReportsBySite'].forEach(k=>delete state[k][siteId]);
   recomputeFlatFindings(); recomputeFlatReports(); recomputeFlatActivityLog(); recomputeFlatArchive();
 }
 function reconcileSiteSubscriptions(){
@@ -991,7 +991,6 @@ async function clearSiteData(siteId){
       db.ref(`${DB_PATH}/reports/${siteId}`).set(null),
       db.ref(`${DB_PATH}/checklistsByArea/${siteId}`).set(resetChecklists),
       db.ref(`${DB_PATH}/areaLastSubmitted/${siteId}`).set(null),
-      db.ref(`${DB_PATH}/auditSessions/${siteId}`).set(null),
     ]);
   }catch(e){ console.error('clearSiteData failed',e); toast(friendlyFirebaseError(e)); }
 }
@@ -1164,10 +1163,27 @@ function compressImage(dataUrl, maxDim, quality){
 /* ============================================================ HELPERS ============================================================ */
 function toast(msg){
   const t=document.getElementById('toast');
+  t.classList.remove('interactive');
   t.textContent=msg;
   t.classList.add('show');
   clearTimeout(window.__toastTimer);
   window.__toastTimer=setTimeout(()=>t.classList.remove('show'),2400);
+}
+function toastWithUndo(msg, onUndo, durationMs){
+  const t=document.getElementById('toast');
+  clearTimeout(window.__toastTimer);
+  t.classList.add('interactive');
+  t.innerHTML=`<span></span><button class="toast-undo-btn" id="toastUndoBtn">Undo</button>`;
+  t.querySelector('span').textContent=msg;
+  t.classList.add('show');
+  const btn=document.getElementById('toastUndoBtn');
+  let used=false;
+  btn.onclick=async()=>{
+    if(used) return; used=true;
+    t.classList.remove('show');
+    await onUndo();
+  };
+  window.__toastTimer=setTimeout(()=>{ t.classList.remove('show'); t.classList.remove('interactive'); },durationMs||9000);
 }
 function statusIcon(status){
   if(status==='good') return `<div class="status-icon status-good">${ICONS.check}</div>`;
@@ -1544,6 +1560,16 @@ function statusPillLabel(status){
 }
 
 /* ============================================================ DAILY AUDIT TAB ============================================================ */
+function todaysReportId(areaId){ return `${areaId}_${todayISO()}`; }
+function todaysReport(siteId, areaId){
+  return (state.reportsBySite[siteId]||{})[todaysReportId(areaId)] || null;
+}
+function itemDoneCountToday(item){
+  const rep=todaysReport(state.siteId, state.areaId);
+  if(!rep || !rep.entries) return 0;
+  return Object.values(rep.entries).filter(e=>e.checklistItemId===item.id).length;
+}
+
 function renderAudit(){
   const isAuditor = state.role==='auditor' || state.role==='admin';
   const isAdmin = state.role==='admin';
@@ -1569,7 +1595,7 @@ function renderAudit(){
       ${accessible.map(id=>`<div class="checklist-item" data-pick-site="${id}"><div class="status-icon status-unchecked"></div><div style="flex:1;min-width:0;"><div class="ci-name">${(state.sites[id]||{}).name||'Untitled Site'}</div></div><div class="chevron">${ICONS.chevronR}</div></div>`).join('')}
     `;
     document.querySelectorAll('[data-pick-site]').forEach(el=>{
-      el.onclick=()=>{ state.siteId=el.dataset.pickSite; state.areaId=null; render(); };
+      el.onclick=()=>{ state.siteId=el.dataset.pickSite; state.areaId=null; state.auditStarted=false; state.pickedItemId=null; state.itemDraftFindingIds=[]; render(); };
     });
     return;
   }
@@ -1577,84 +1603,138 @@ function renderAudit(){
   const areaList=currentAreaList();
   if(!state.areaId || !areaList.some(a=>a.id===state.areaId)){
     state.areaId = areaList.length===1 ? areaList[0].id : null;
+    state.auditStarted=false; state.pickedItemId=null; state.itemDraftFindingIds=[];
   }
 
   if(!state.areaId){
     document.getElementById('content').innerHTML = `
-      <div class="section-head"><h2>Choose an Area — ${currentSiteName()}</h2></div>
+      <div class="section-head"><h2>Choose Area Here!</h2></div>
       ${areaList.length===0
         ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>${isAdmin?'No Areas set up for this Site yet.':'No Areas have been set up for this Site yet. Contact your Admin.'}</div></div>${isAdmin?`<button class="btn-primary" id="goManageAreasBtn" style="margin-top:12px;">${ICONS.plus} Manage Areas</button>`:''}`
-        : areaList.map(a=>{
-            const sess=(state.auditSessionsBySite[state.siteId]||{})[a.id];
-            return `<div class="checklist-item" data-pick-area="${a.id}"><div class="status-icon ${sess?'status-warning':'status-unchecked'}">${sess?ICONS.clock:''}</div><div style="flex:1;min-width:0;"><div class="ci-name">${a.name}</div>${sess?`<div class="ci-sub warning">In progress — started by ${sess.startedBy}</div>`:''}</div><div class="chevron">${ICONS.chevronR}</div></div>`;
-          }).join('')}
+        : areaList.map(a=>`<div class="checklist-item" data-pick-area="${a.id}"><div class="status-icon status-unchecked"></div><div style="flex:1;min-width:0;"><div class="ci-name">${a.name}</div></div><div class="chevron">${ICONS.chevronR}</div></div>`).join('')}
       ${showSitePicker?`<button class="btn-secondary" style="width:100%;margin-top:14px;" id="changeSiteBtn">${ICONS.chevronD} Change Site</button>`:''}
     `;
     const csb=document.getElementById('changeSiteBtn'); if(csb) csb.onclick=()=>{state.siteId=null;render();};
     document.querySelectorAll('[data-pick-area]').forEach(el=>{
-      el.onclick=()=>{ state.areaId=el.dataset.pickArea; render(); };
+      el.onclick=()=>{ state.areaId=el.dataset.pickArea; state.auditStarted=false; state.pickedItemId=null; state.itemDraftFindingIds=[]; render(); };
     });
     const gmb=document.getElementById('goManageAreasBtn'); if(gmb) gmb.onclick=()=>openAreaManagement(state.siteId);
     return;
   }
 
-  // --- an Area is selected: hybrid one-screen checklist (inline OK / Flag) ---
   const checklist=getChecklist();
-  const total=checklist.length;
-  const completed=checklist.filter(c=>c.status!=='unchecked').length;
-  const pct=total ? Math.round((completed/total)*100) : 0;
-  const session=(state.auditSessionsBySite[state.siteId]||{})[state.areaId];
-  const areaFindings = state.findings.filter(f=>f.siteId===state.siteId && f.areaId===state.areaId);
+  const rep=todaysReport(state.siteId, state.areaId);
+  const coveredToday = rep ? rep.completedItems : 0;
 
-  let html=`
-  <div class="tile-row">
-    <div class="tile-field" id="dateField">
-      ${ICONS.calendar}
-      <div class="tile-label">Audit Date</div>
-      <div class="tile-value">${fmtDateShort(state.auditDate)}</div>
-    </div>
-    <div class="tile-field" id="areaField">
-      ${ICONS.chevronD}
-      <div class="tile-label">${showSitePicker?currentSiteName()+' — ':''}Area</div>
-      <div class="tile-value">${currentAreaName()}</div>
-      <div class="floor-dropdown" id="areaDropdown" style="display:none;">
-        ${areaList.map(a=>`<div class="floor-dropdown-item" data-area="${a.id}">${a.id===state.areaId?ICONS.check:'<span style="width:15px;display:inline-block;"></span>'}<span>${a.name}</span></div>`).join('')}
+  // ---- Area selected but audit not started yet: show a coverage summary + Start Audit ----
+  if(!state.auditStarted){
+    document.getElementById('content').innerHTML = `
+      <div class="tile-row">
+        <div class="tile-field" id="areaField">
+          ${ICONS.chevronD}
+          <div class="tile-label">${showSitePicker?currentSiteName()+' — ':''}Area</div>
+          <div class="tile-value">${currentAreaName()}</div>
+          <div class="floor-dropdown" id="areaDropdown" style="display:none;">
+            ${areaList.map(a=>`<div class="floor-dropdown-item" data-area="${a.id}">${a.id===state.areaId?ICONS.check:'<span style="width:15px;display:inline-block;"></span>'}<span>${a.name}</span></div>`).join('')}
+          </div>
+        </div>
       </div>
-    </div>
-  </div>
+      ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use Manage Areas below to edit ${currentAreaName()}'s checklist.</div>` : ''}
+      <div class="card" style="text-align:center;padding:36px 20px;">
+        ${ICONS.clipboard}
+        <div style="font-weight:700;font-size:17px;margin:14px 0 6px;">${currentAreaName()}</div>
+        <div style="font-size:13px;color:var(--text-600);font-weight:600;margin-bottom:22px;">${checklist.length===0?'No checklist items yet':`${coveredToday} of ${checklist.length} sub-areas covered today`}</div>
+        ${isAuditor && checklist.length>0 ? `<button class="btn-primary" id="startAuditBtn" style="background:var(--orange-500);">${ICONS.check} Start Audit</button>` : ''}
+        ${checklist.length===0 && isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Add checklist items from Manage Areas below to begin.</div>` : ''}
+        ${checklist.length===0 && !isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Your Admin hasn't added checklist items for this Area yet.</div>` : ''}
+      </div>
+      <div class="section-head"><h2>Recent Findings — ${currentAreaName()}</h2><button class="link-btn" id="viewAllFindings">View All</button></div>
+      ${groupedFindingsHTML(state.findings.filter(f=>f.siteId===state.siteId && f.areaId===state.areaId).slice(0,15))}
+      ${isAdmin ? adminToolsHTML() : ''}
+      ${isAdmin ? dangerZoneHTML() : ''}
+    `;
+    wireAreaFieldDropdown();
+    wireCommonFooterHandlers(isAdmin);
+    const startBtn=document.getElementById('startAuditBtn');
+    if(startBtn) startBtn.onclick=()=>{ state.auditStarted=true; state.pickedItemId=null; state.itemDraftFindingIds=[]; render(); };
+    return;
+  }
 
-  ${session ? `<div class="lock-note" style="background:#EAF2FF;color:#1E4E9C;">${ICONS.clock} Audit in progress since ${relativeTime(session.startedAt)} — started by ${session.startedBy}.</div>` : ''}
-  ${!isAuditor ? `<div class="lock-note">${ICONS.info} You're viewing as a Resolver. Only auditors can update checklist items or submit an audit.</div>` : ''}
-  ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use the pencil icons to manage this Area's checklist template.</div>` : ''}
+  // ---- Audit started, no item picked yet: dropdown of checklist items (sub-areas) ----
+  if(!state.pickedItemId){
+    document.getElementById('content').innerHTML = `
+      <div class="section-head" style="margin-top:0;"><h2>${currentAreaName()} — pick a sub-area</h2></div>
+      <div class="lock-note">${ICONS.info} Not obligated to cover every sub-area today — pick as many or as few as you need. A sub-area can be audited more than once.</div>
+      <div class="field-block">
+        <select class="select-input" id="itemPickSelect">
+          <option value="">Select a checklist item...</option>
+          ${checklist.map(item=>{
+            const rep2=todaysReport(state.siteId,state.areaId);
+            const n = rep2 && rep2.entries ? Object.values(rep2.entries).filter(e=>e.checklistItemId===item.id).length : 0;
+            return `<option value="${item.id}">${item.name}${n>0?` (done ${n}x today)`:''}</option>`;
+          }).join('')}
+        </select>
+      </div>
+      <button class="btn-secondary" style="width:100%;" id="backToStartBtn">${ICONS.chevronL} Back</button>
+      <div class="section-head"><h2>Today's entries — ${currentAreaName()}</h2></div>
+      ${todaysEntriesHTML()}
+    `;
+    document.getElementById('itemPickSelect').onchange=(e)=>{
+      if(!e.target.value) return;
+      state.pickedItemId=parseInt(e.target.value); state.itemDraftFindingIds=[]; render();
+    };
+    document.getElementById('backToStartBtn').onclick=()=>{ state.auditStarted=false; render(); };
+    return;
+  }
 
-  <div class="card">
-    <div class="row-between">
-      <span class="card-title" style="margin:0;">Audit Checklist — ${currentAreaName()}</span>
-      <button class="admin-edit-btn" id="addChecklistItem" title="Add Checklist Item">${ICONS.plus}</button>
-    </div>
-    <div style="font-size:12.5px;font-weight:700;color:var(--blue-600);margin:-4px 0 8px;">${completed} / ${total} Completed</div>
-    <div class="checklist-progress-track"><div class="checklist-progress-fill" style="width:${pct}%"></div></div>
-    <div style="margin-top:10px;">
-      ${total===0 ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>No checklist items for ${currentAreaName()} yet.</div></div>` : checklist.map(item=>{
-        const count=itemFindings(item).length;
-        return `<div class="checklist-item" data-id="${item.id}" style="cursor:${count>0?'pointer':'default'};">
-          ${statusIcon(item.status)}
-          <div style="flex:1;min-width:0;"><div class="ci-name">${item.name}</div>${subLabel(item)}</div>
-          ${isAdmin ? `<button class="admin-edit-btn" data-edit="${item.id}">${ICONS.pencil}</button>` : ''}
-          ${isAuditor ? `<button class="chip-btn chip-ok" data-ok="${item.id}" title="Mark OK">${ICONS.check}</button><button class="chip-btn chip-flag" data-flag="${item.id}" title="Flag an issue">${ICONS.wrench}</button>` : ''}
-        </div>`;
-      }).join('')}
-    </div>
-  </div>
+  // ---- An item is picked: choose OK vs Flag, or review findings logged so far ----
+  const item=checklist.find(c=>c.id===state.pickedItemId);
+  if(!item){ state.pickedItemId=null; render(); return; }
+  const draftFindings=state.itemDraftFindingIds.map(id=>state.findings.find(f=>f.id===id)).filter(Boolean);
 
-  ${isAuditor
-    ? `<button class="btn-primary" id="submitAuditBtn" style="background:var(--green-600);margin-bottom:20px;">${ICONS.check} Submit Audit</button>`
-    : `<div class="lock-note" style="margin-bottom:20px;">${ICONS.info} Only auditors can submit the daily audit.</div>`}
+  document.getElementById('content').innerHTML = `
+    <div class="section-head" style="margin-top:0;"><h2>${item.name}</h2></div>
+    ${draftFindings.length===0 ? `
+      <div class="lock-note">${ICONS.info} Mark this sub-area OK, or flag one or more findings before reviewing.</div>
+      <button class="btn-primary" id="markOkBtn" style="background:var(--green-600);margin-bottom:12px;">${ICONS.check} Mark OK — No Issues</button>
+      <button class="btn-primary" id="flagBtn" style="background:var(--orange-500);">${ICONS.wrench} Flag a Finding</button>
+    ` : `
+      <div class="card"><div class="card-title">Findings logged so far (${draftFindings.length})</div>
+        ${draftFindings.map(f=>`
+          <div class="mini-finding" style="${findingCardStyle(f)}">
+            <div class="mini-thumb" style="${f.photos.before?`background-image:url('${f.photos.before}');background-size:cover;background-position:center;`:`background:${f.color}`}"></div>
+            <div style="flex:1;min-width:0;"><div class="mini-finding-title">${f.title}</div><div class="mini-finding-sub">${f.severity} severity</div></div>
+          </div>`).join('')}
+      </div>
+      <button class="btn-secondary" style="width:100%;margin-bottom:10px;" id="addAnotherBtn">${ICONS.plus} Add Another Finding</button>
+      <button class="btn-primary" id="reviewSubmitBtn" style="background:var(--green-600);">${ICONS.check} Done — Review &amp; Submit</button>
+    `}
+    <button class="btn-secondary" style="width:100%;margin-top:10px;" id="cancelItemBtn">${ICONS.x} Cancel — Pick a Different Sub-Area</button>
+  `;
+  const markOkBtn=document.getElementById('markOkBtn');
+  if(markOkBtn) markOkBtn.onclick=()=>openItemReview(item,[]);
+  const flagBtn=document.getElementById('flagBtn');
+  if(flagBtn) flagBtn.onclick=()=>openAddFinding(item);
+  const addAnotherBtn=document.getElementById('addAnotherBtn');
+  if(addAnotherBtn) addAnotherBtn.onclick=()=>openAddFinding(item);
+  const reviewSubmitBtn=document.getElementById('reviewSubmitBtn');
+  if(reviewSubmitBtn) reviewSubmitBtn.onclick=()=>openItemReview(item,state.itemDraftFindingIds.slice());
+  document.getElementById('cancelItemBtn').onclick=()=>{ state.pickedItemId=null; state.itemDraftFindingIds=[]; render(); };
+}
 
-  <div class="section-head"><h2>Recent Findings — ${currentAreaName()}</h2><button class="link-btn" id="viewAllFindings">View All</button></div>
-  ${groupedFindingsHTML(areaFindings.slice(0,15))}
+function todaysEntriesHTML(){
+  const rep=todaysReport(state.siteId,state.areaId);
+  if(!rep || !rep.entries || Object.keys(rep.entries).length===0) return `<div class="empty-mini" style="padding:12px 0;">No sub-areas audited yet today</div>`;
+  const entries=Object.values(rep.entries).sort((a,b)=>b.submittedAt-a.submittedAt);
+  return entries.map(e=>`
+    <div class="checklist-item" style="cursor:default;">
+      ${e.outcome==='ok'?statusIcon('good'):statusIcon('issue')}
+      <div style="flex:1;min-width:0;"><div class="ci-name">${e.itemName}</div><div class="ci-sub unchecked">${e.outcome==='ok'?'No issues':`${(e.findingIds||[]).length} finding${(e.findingIds||[]).length===1?'':'s'}`} — by ${e.submittedBy}, ${relativeTime(e.submittedAt)}</div></div>
+    </div>`).join('');
+}
 
-  ${isAdmin ? `
+function adminToolsHTML(){
+  return `
   <div class="card">
     <div class="card-title">Admin Tools</div>
     <div class="action-tile-row" style="margin-bottom:10px;">
@@ -1669,68 +1749,34 @@ function renderAudit(){
       <button class="action-tile" style="background:#8B5CF6;" id="pendingStaffBtn">${ICONS.clock}Pending Approvals${Object.keys(state.pendingStaffBySite[state.siteId]||{}).length?` (${Object.keys(state.pendingStaffBySite[state.siteId]||{}).length})`:''}</button>
       <button class="action-tile" style="background:var(--navy-700);" id="userMgmtBtn">${ICONS.shield}User Management</button>
     </div>
-    <div class="action-tile-row" style="margin-bottom:10px;">
+    <div class="action-tile-row">
       <button class="action-tile" style="background:#0E7C74;" id="activityLogBtn">${ICONS.clock}Activity Log</button>
       <button class="action-tile" style="background:#5B6478;" id="archiveBtn">${ICONS.trash}Archive</button>
     </div>
-    <div class="action-tile-row">
-      <button class="action-tile" style="background:#B45309;" id="inProgressBtn">${ICONS.clock}In-Progress Audits</button>
-    </div>
-  </div>` : ''}
-
-  ${isAdmin ? `
+  </div>`;
+}
+function dangerZoneHTML(){
+  return `
   <div class="danger-zone">
     <div class="card-title">Danger Zone</div>
     <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:12px;line-height:1.4;">Permanently erases every finding and report for ${currentSiteName()}, and resets its checklist statuses back to unchecked. This cannot be undone.</div>
     <button class="btn-danger" id="clearAllDataBtn">${ICONS.trash} Clear ${currentSiteName()} Data</button>
-  </div>` : ''}
-  `;
-  document.getElementById('content').innerHTML=html;
-
-  document.getElementById('dateField').onclick=(e)=>{e.stopPropagation();openDatePicker();};
+  </div>`;
+}
+function wireAreaFieldDropdown(){
   const areaField=document.getElementById('areaField');
+  if(!areaField) return;
   const areaDropdown=document.getElementById('areaDropdown');
   areaField.onclick=(e)=>{e.stopPropagation();state.areaDropdownOpen=!state.areaDropdownOpen;areaDropdown.style.display=state.areaDropdownOpen?'block':'none';};
   document.querySelectorAll('.floor-dropdown-item[data-area]').forEach(el=>{
-    el.onclick=(e)=>{e.stopPropagation();state.areaId=el.dataset.area;state.areaDropdownOpen=false;render();};
+    el.onclick=(e)=>{e.stopPropagation();state.areaId=el.dataset.area;state.areaDropdownOpen=false;state.auditStarted=false;state.pickedItemId=null;state.itemDraftFindingIds=[];render();};
   });
-  document.getElementById('viewAllFindings').onclick=()=>{state.tab='dashboard';render();};
+}
+function wireCommonFooterHandlers(isAdmin){
+  const viewAllFindings=document.getElementById('viewAllFindings');
+  if(viewAllFindings) viewAllFindings.onclick=()=>{state.tab='dashboard';render();};
   document.querySelectorAll('.finding-card').forEach(c=>c.onclick=()=>openFindingDetail(parseInt(c.dataset.finding)));
-
-  document.querySelectorAll('.checklist-item[data-id]').forEach(c=>{
-    c.addEventListener('click',(e)=>{
-      if(e.target.closest('.admin-edit-btn')||e.target.closest('.chip-btn')) return;
-      const item=checklist.find(x=>x.id===parseInt(c.dataset.id));
-      if(itemFindings(item).length>0) openChecklistDetail(item.id);
-    });
-  });
-  if(isAdmin){
-    document.querySelectorAll('[data-edit]').forEach(b=>{b.onclick=(e)=>{e.stopPropagation();openEditChecklistItem(parseInt(b.dataset.edit));};});
-  }
-  if(isAuditor){
-    document.querySelectorAll('[data-ok]').forEach(b=>{
-      b.onclick=async(e)=>{
-        e.stopPropagation();
-        const item=checklist.find(x=>x.id===parseInt(b.dataset.ok));
-        item.status='good';
-        await runGuarded(b,'',()=>Promise.all([saveChecklistsForArea(state.siteId,state.areaId,checklist),touchAuditSession(state.siteId,state.areaId)]));
-        render();
-      };
-    });
-    document.querySelectorAll('[data-flag]').forEach(b=>{
-      b.onclick=(e)=>{
-        e.stopPropagation();
-        const item=checklist.find(x=>x.id===parseInt(b.dataset.flag));
-        openAddFinding(item);
-      };
-    });
-  }
-  document.getElementById('addChecklistItem').onclick=()=>{
-    if(!isAdmin){toast('Only Admin can add checklist items');return;}
-    openEditChecklistItem(null);
-  };
-  const submitBtn=document.getElementById('submitAuditBtn');
-  if(submitBtn) submitBtn.onclick=()=>submitAudit();
+  if(!isAdmin) return;
   const clearBtn=document.getElementById('clearAllDataBtn');
   if(clearBtn) clearBtn.onclick=()=>{
     openConfirmModal(`This will permanently delete every finding and report for ${currentSiteName()}, and reset all its checklist statuses to unchecked. This cannot be undone. Continue?`,async()=>{
@@ -1741,92 +1787,97 @@ function renderAudit(){
       toast('Site data cleared');
     },'Clear Everything',true);
   };
-  const manageSitesBtn=document.getElementById('manageSitesBtn');
-  if(manageSitesBtn) manageSitesBtn.onclick=()=>openSiteManagement();
-  const manageAreasBtn=document.getElementById('manageAreasBtn');
-  if(manageAreasBtn) manageAreasBtn.onclick=()=>openAreaManagement(state.siteId);
-  const manageTitlesBtn=document.getElementById('manageTitlesBtn');
-  if(manageTitlesBtn) manageTitlesBtn.onclick=()=>openManageTitles();
-  const manageStaffBtn=document.getElementById('manageStaffBtn');
-  if(manageStaffBtn) manageStaffBtn.onclick=()=>openManageStaff();
-  const pendingStaffBtn=document.getElementById('pendingStaffBtn');
-  if(pendingStaffBtn) pendingStaffBtn.onclick=()=>openPendingStaff();
-  const userMgmtBtn=document.getElementById('userMgmtBtn');
-  if(userMgmtBtn) userMgmtBtn.onclick=()=>openUserManagement();
-  const activityLogBtn=document.getElementById('activityLogBtn');
-  if(activityLogBtn) activityLogBtn.onclick=()=>openActivityLog();
-  const archiveBtn=document.getElementById('archiveBtn');
-  if(archiveBtn) archiveBtn.onclick=()=>openArchive();
-  const inProgressBtn=document.getElementById('inProgressBtn');
-  if(inProgressBtn) inProgressBtn.onclick=()=>openInProgressAudits();
+  document.getElementById('manageSitesBtn').onclick=()=>openSiteManagement();
+  document.getElementById('manageAreasBtn').onclick=()=>openAreaManagement(state.siteId);
+  document.getElementById('manageTitlesBtn').onclick=()=>openManageTitles();
+  document.getElementById('manageStaffBtn').onclick=()=>openManageStaff();
+  document.getElementById('pendingStaffBtn').onclick=()=>openPendingStaff();
+  document.getElementById('userMgmtBtn').onclick=()=>openUserManagement();
+  document.getElementById('activityLogBtn').onclick=()=>openActivityLog();
+  document.getElementById('archiveBtn').onclick=()=>openArchive();
 }
 
-async function touchAuditSession(siteId, areaId){
-  if(!storageAvailable) return;
-  const checklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
-  const checkedCount=checklist.filter(c=>c.status!=='unchecked').length;
-  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
-  const findingsCount=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since).length;
-  const existing=(state.auditSessionsBySite[siteId]||{})[areaId];
-  const payload={
-    startedBy: existing?existing.startedBy:(state.username||'Unknown'),
-    startedByUid: existing?existing.startedByUid:state.uid,
-    startedAt: existing?existing.startedAt:Date.now(),
-    checkedCount, findingsCount,
-    lastActivityAt: Date.now(),
-  };
-  try{ await db.ref(`${DB_PATH}/auditSessions/${siteId}/${areaId}`).set(payload); }
-  catch(e){ console.error('touchAuditSession failed',e); }
-}
-async function clearAuditSession(siteId, areaId){
-  if(!storageAvailable) return;
-  try{ await db.ref(`${DB_PATH}/auditSessions/${siteId}/${areaId}`).remove(); }
-  catch(e){ console.error('clearAuditSession failed',e); }
-}
-
-function openDatePicker(){
+/* ---------- Per-item Review & Submit — the only "submit" action in this flow. Each submission is
+   folded into ONE evolving Report per (Site, Area, calendar day) via a Firebase transaction, so
+   concurrent submissions from different auditors on the same Area/day never clobber each other. ---------- */
+function openItemReview(item, findingIds){
+  const findings=findingIds.map(id=>state.findings.find(f=>f.id===id)).filter(Boolean);
+  const outcome = findings.length>0 ? 'flagged' : 'ok';
   openModal(`
-    <div class="modal-head"><h3>Select Audit Date</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="field-block"><input type="date" class="text-input" id="datePickInput" value="${state.auditDate}"></div>
-    <button class="btn-primary" id="dateConfirm">Confirm Date</button>
-  `);
-  document.getElementById('dateConfirm').onclick=()=>{
-    state.auditDate=document.getElementById('datePickInput').value||state.auditDate;
-    closeModal();render();
-  };
-}
-
-/* Item detail — used when an item already has findings attached, to review/edit/add more. The fast-path
-   OK / Flag buttons on the main checklist screen handle the common case without opening this at all. */
-function openChecklistDetail(id){
-  const item=getChecklist().find(c=>c.id===id);
-  const attached=itemFindings(item);
-  const canEdit=state.role==='auditor' || state.role==='admin';
-  openModal(`
-    <div class="modal-head"><h3>${item.name}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="row-between" style="margin-bottom:16px;"><span style="font-size:13px;font-weight:700;color:var(--text-600);">Status</span>${statusIcon(item.status)}</div>
-    ${canEdit?`<button class="btn-primary" id="addFindingHereBtn" style="background:var(--orange-500);margin-bottom:16px;">${ICONS.wrench} Add Another Finding</button>`:''}
-    <label class="field-label">Findings Attached (${attached.length})</label>
-    <div>
-      ${attached.length===0 ? `<div class="empty-mini" style="padding:8px 0;">No findings attached yet</div>` : attached.map(f=>`
-        <div class="mini-finding" style="${findingCardStyle(f)}" data-finding="${f.id}">
-          <div class="mini-thumb" style="${f.photos.before?`background-image:url('${f.photos.before}');background-size:cover;background-position:center;`:`background:${f.color}`}"></div>
-          <div style="flex:1;min-width:0;"><div class="mini-finding-title">${f.title}</div><div class="mini-finding-sub">${resolutionPillHTML(f)} ${dueBadgeHTML(f)}</div></div>
-          ${canEdit ? `<button class="admin-edit-btn" data-edit-finding="${f.id}">${ICONS.pencil}</button>` : ''}
-        </div>`).join('')}
+    <div class="modal-head"><h3>Review — ${item.name}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    ${outcome==='ok'
+      ? `<div class="lock-note" style="background:var(--green-050,#E4F6ED);color:var(--green-600);">${ICONS.check} No issues found in ${item.name}.</div>`
+      : `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} ${findings.length} finding${findings.length===1?'':'s'} will be submitted for ${item.name}.</div>
+         ${findings.map(f=>`<div class="checklist-item" style="cursor:default;">${statusIcon('issue')}<div style="flex:1;min-width:0;"><div class="ci-name">${f.title}</div><div class="ci-sub unchecked">${f.severity} severity</div></div></div>`).join('')}`}
+    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin:16px 0;">This adds to today's report for ${currentSiteName()} / ${currentAreaName()}. You can audit this same sub-area again later today if needed.</div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-secondary" id="reviewBackBtn">Back</button>
+      <button class="btn-primary" id="reviewConfirmBtn" style="flex:1;background:var(--green-600);">${ICONS.check} Submit</button>
     </div>
-    <button class="btn-secondary" style="width:100%;margin-top:14px;" onclick="closeModal()">Close</button>
   `);
-  document.querySelectorAll('.mini-finding').forEach(el=>{
-    el.addEventListener('click',(e)=>{ if(e.target.closest('[data-edit-finding]')) return; openFindingDetail(parseInt(el.dataset.finding),()=>openChecklistDetail(item.id)); });
-  });
-  if(canEdit){
-    document.querySelectorAll('[data-edit-finding]').forEach(btn=>{
-      btn.onclick=(e)=>{e.stopPropagation();const f=state.findings.find(x=>x.id===parseInt(btn.dataset.editFinding));openAddFinding(item,f);};
+  document.getElementById('reviewBackBtn').onclick=()=>{ closeModal(); render(); };
+  document.getElementById('reviewConfirmBtn').onclick=async()=>{
+    const btn=document.getElementById('reviewConfirmBtn');
+    const siteId=state.siteId, areaId=state.areaId;
+    let result;
+    await runGuarded(btn,'Submitting...',async()=>{ result=await submitItemEntry(siteId,areaId,item,outcome,findingIds); });
+    closeModal();
+    state.pickedItemId=null; state.itemDraftFindingIds=[];
+    render();
+    const label=`Submitted — ${item.name}${outcome==='ok'?' (OK)':` (${findingIds.length} finding${findingIds.length===1?'':'s'})`}`;
+    toastWithUndo(label, async()=>{
+      await undoItemEntry(siteId,areaId,result.reportId,result.entryId,outcome==='flagged'?findingIds:[]);
+      toast('Undone');
+      render();
     });
-    const addBtn=document.getElementById('addFindingHereBtn');
-    if(addBtn) addBtn.onclick=()=>openAddFinding(item);
-  }
+  };
+}
+async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
+  if(!storageAvailable) return {reportId:null,entryId:null};
+  const dateISO=todayISO();
+  const dateLabel=fmtDateShort(dateISO);
+  const reportId=todaysReportId(areaId);
+  const entryId=db.ref().push().key;
+  const areaName=((state.areasBySite[siteId]||{})[areaId]||{}).name||'Unknown Area';
+  const totalItemsNow=((state.checklistsByArea[siteId]||{})[areaId]||[]).length;
+  const entry={ checklistItemId:item.id, itemName:item.name, outcome, findingIds:findingIds||[], submittedBy:state.username||'Unknown', submittedAt:Date.now() };
+  const reportRef=db.ref(`${DB_PATH}/reports/${siteId}/${reportId}`);
+  try{
+    await reportRef.transaction(current=>{
+      const rep=current || { id:reportId, siteId, areaId, date:dateLabel, floor:areaName, entries:{} };
+      rep.entries=rep.entries||{};
+      rep.entries[entryId]=entry;
+      const allFindingIds=[]; const doneItemIds=new Set();
+      Object.values(rep.entries).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.checklistItemId); });
+      rep.findingIds=allFindingIds; rep.findingsCount=allFindingIds.length; rep.completedItems=doneItemIds.size;
+      rep.totalItems=totalItemsNow; rep.submittedBy=entry.submittedBy; rep.date=dateLabel; rep.floor=areaName;
+      rep.siteId=siteId; rep.areaId=areaId; rep.id=reportId;
+      return rep;
+    });
+  }catch(e){ console.error('submitItemEntry failed',e); toast(friendlyFirebaseError(e)); }
+  logActivity(siteId, outcome==='ok'?'Checklist item OK':'Report submitted', `${item.name} — ${outcome==='ok'?'no issues':`${(findingIds||[]).length} finding(s)`}`);
+  return {reportId,entryId};
+}
+async function undoItemEntry(siteId, areaId, reportId, entryId, findingIdsToDelete){
+  if(!storageAvailable || !reportId) return;
+  const reportRef=db.ref(`${DB_PATH}/reports/${siteId}/${reportId}`);
+  try{
+    await reportRef.transaction(current=>{
+      if(!current || !current.entries || !current.entries[entryId]) return current;
+      delete current.entries[entryId];
+      const remaining=current.entries;
+      if(Object.keys(remaining).length===0) return null;
+      const allFindingIds=[]; const doneItemIds=new Set();
+      Object.values(remaining).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.checklistItemId); });
+      current.findingIds=allFindingIds; current.findingsCount=allFindingIds.length; current.completedItems=doneItemIds.size;
+      return current;
+    });
+    if(findingIdsToDelete && findingIdsToDelete.length){
+      const updates={};
+      findingIdsToDelete.forEach(fid=>{ updates[`${DB_PATH}/findings/${siteId}/${fid}`]=null; });
+      await db.ref().update(updates);
+    }
+  }catch(e){ console.error('undoItemEntry failed',e); toast(friendlyFirebaseError(e)); }
 }
 
 function openEditChecklistItem(id){
@@ -1859,117 +1910,6 @@ function openEditChecklistItem(id){
       closeModal();render();toast('Checklist item removed');
     };
   }
-}
-
-/* ---------- Submit / Force-submit an Audit — both funnel through finalizeAudit so a normal submit and an
-   Admin's force-close of a stale in-progress session produce an identical, correctly-dated Report. ---------- */
-async function finalizeAudit(siteId, areaId, opts){
-  opts=opts||{};
-  const checklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
-  const total=checklist.length;
-  const completed=checklist.filter(c=>c.status!=='unchecked').length;
-  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
-  const findingsForReport=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since);
-  const areaName=((state.areasBySite[siteId]||{})[areaId]||{}).name||'Unknown Area';
-  const siteName=(state.sites[siteId]||{}).name||'Unknown Site';
-  const dateLabel = opts.dateOverride || fmtDateShort(state.auditDate);
-  const newReport={
-    id:Date.now(),
-    siteId, areaId,
-    date:dateLabel,
-    floor:areaName,
-    totalItems:total,
-    completedItems:completed,
-    checklistSnapshot:JSON.parse(JSON.stringify(checklist)),
-    findingIds:findingsForReport.map(f=>f.id),
-    findingsCount:findingsForReport.length,
-    submittedBy:opts.submittedByOverride || state.username || 'Unknown',
-    forced:!!opts.forced,
-  };
-  const resetChecklist=checklist.map(item=>({...item,status:'unchecked'}));
-  const submittedAt=Date.now();
-  await Promise.all([
-    saveReport(newReport),
-    saveChecklistsForArea(siteId,areaId,resetChecklist),
-    setAreaLastSubmitted(siteId,areaId,submittedAt),
-    clearAuditSession(siteId,areaId),
-  ]);
-  logActivity(siteId, opts.forced?'Report force-submitted':'Report submitted', `Audit submitted — ${newReport.date} — ${siteName} / ${areaName} (${newReport.findingsCount} findings)${opts.forced?' — forced by Admin':''}`);
-  return newReport;
-}
-
-function submitAudit(){
-  const siteId=state.siteId, areaId=state.areaId;
-  const checklist=getChecklist();
-  const total=checklist.length;
-  const completed=checklist.filter(c=>c.status!=='unchecked').length;
-  const unchecked=total-completed;
-  const since=(state.areaLastSubmitted[siteId]||{})[areaId]||0;
-  const findingsForReport=state.findings.filter(f=>f.siteId===siteId && f.areaId===areaId && f.createdAt>since);
-
-  openModal(`
-    <div class="modal-head"><h3>Review Audit — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    ${unchecked>0 ? `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} ${unchecked} area${unchecked>1?'s':''} not yet checked. You can still submit.</div>` : ''}
-    ${total===0 ? `<div class="lock-note" style="background:var(--orange-050);color:#8A5210;">${ICONS.info} No checklist items have been added yet for ${currentAreaName()}.</div>` : ''}
-    <div style="margin-bottom:16px;">
-      ${checklist.map(item=>{
-        const count=itemFindings(item).length;
-        return `<div class="checklist-item" style="cursor:default;">${statusIcon(item.status)}<div style="flex:1;min-width:0;"><div class="ci-name">${item.name}</div><div class="ci-sub unchecked">${count>0?`${count} finding${count>1?'s':''} attached`:(item.status==='unchecked'?'Not checked':'No findings')}</div></div></div>`;
-      }).join('')}
-    </div>
-    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:16px;">${findingsForReport.length} finding${findingsForReport.length===1?'':'s'} will be included in this report. Statuses and attached findings will reset for the next audit after you confirm.</div>
-    <div style="display:flex;gap:10px;">
-      <button class="btn-secondary" id="reviewCancelBtn">Cancel</button>
-      <button class="btn-primary" id="reviewConfirmBtn" style="flex:1;background:var(--green-600);">${ICONS.check} Confirm &amp; Submit</button>
-    </div>
-  `);
-  document.getElementById('reviewCancelBtn').onclick=()=>closeModal();
-  document.getElementById('reviewConfirmBtn').onclick=async()=>{
-    const btn=document.getElementById('reviewConfirmBtn');
-    await runGuarded(btn,'Submitting...',()=>finalizeAudit(siteId,areaId,{}));
-    closeModal();
-    toast('Audit submitted — checklist reset for next audit');
-    render();
-  };
-}
-
-function openInProgressAudits(){
-  const rows=[];
-  Object.keys(state.auditSessionsBySite).forEach(siteId=>{
-    Object.entries(state.auditSessionsBySite[siteId]||{}).forEach(([areaId,sess])=>{
-      if(sess) rows.push({siteId,areaId,...sess});
-    });
-  });
-  rows.sort((a,b)=>a.startedAt-b.startedAt);
-  openModal(`
-    <div class="modal-head"><h3>In-Progress Audits</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    ${rows.length===0 ? `<div class="empty-mini" style="padding:16px 0;">Nothing in progress right now</div>` : rows.map(r=>{
-      const siteName=(state.sites[r.siteId]||{}).name||'Unknown Site';
-      const areaName=((state.areasBySite[r.siteId]||{})[r.areaId]||{}).name||'Unknown Area';
-      const isStale=(Date.now()-r.startedAt)>24*60*60*1000;
-      return `<div class="card" style="cursor:default;">
-        <div class="row-between"><div style="font-weight:700;font-size:14px;">${siteName} — ${areaName}</div>${isStale?`<span class="status-pill pill-issue">Stale</span>`:''}</div>
-        <div style="font-size:12px;color:var(--text-600);margin:6px 0;">Started by ${r.startedBy}, ${relativeTime(r.startedAt)} — ${r.checkedCount||0} checked, ${r.findingsCount||0} findings</div>
-        <button class="btn-secondary" style="width:100%;color:#B45309;" data-force-submit="${r.siteId}|${r.areaId}">${ICONS.check} Force Submit</button>
-      </div>`;
-    }).join('')}
-    <button class="btn-secondary" style="width:100%;margin-top:6px;" onclick="closeModal()">Close</button>
-  `);
-  document.querySelectorAll('[data-force-submit]').forEach(btn=>{
-    btn.onclick=async()=>{
-      const [siteId,areaId]=btn.dataset.forceSubmit.split('|');
-      const sess=(state.auditSessionsBySite[siteId]||{})[areaId];
-      openConfirmModal(`Force-submit this audit as-is? It will be recorded under its original start date and attributed to ${sess.startedBy}.`,async()=>{
-        const confirmBtn=document.getElementById('confirmOkBtn');
-        const startDate=new Date(sess.startedAt);
-        const iso=`${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
-        await runGuarded(confirmBtn,'Submitting...',()=>finalizeAudit(siteId,areaId,{submittedByOverride:sess.startedBy,dateOverride:fmtDateShort(iso),forced:true}));
-        closeModal();
-        openInProgressAudits();
-        toast('Audit force-submitted');
-      },'Force Submit',true);
-    };
-  });
 }
 
 /* ---------- Admin Tools: Manage Titles ---------- */
@@ -2137,7 +2077,7 @@ function openSiteManagement(){
         const confirmBtn=document.getElementById('confirmOkBtn');
         await runGuarded(confirmBtn,'Deleting...',async()=>{
           const updates={};
-          ['findings','reports','checklistsByArea','areaLastSubmitted','auditSessions','titleTemplatesBySite','staffByArea','pendingStaff','activityLog'].forEach(k=>{
+          ['findings','reports','checklistsByArea','areaLastSubmitted','titleTemplatesBySite','staffByArea','pendingStaff','activityLog'].forEach(k=>{
             updates[`${DB_PATH}/${k}/${id}`]=null;
           });
           updates[`${DB_PATH}/archive/findings/${id}`]=null;
@@ -2197,14 +2137,13 @@ function openAreaManagement(siteId){
     btn.onclick=()=>{
       const id=btn.dataset.deleteArea;
       const a=(state.areasBySite[siteId]||{})[id];
-      openConfirmModal(`Delete "${a.name}"? Its checklist template and in-progress session will be removed. Past findings and reports stay in your records. This cannot be undone.`,async()=>{
+      openConfirmModal(`Delete "${a.name}"? Its checklist template will be removed. Past findings and reports stay in your records. This cannot be undone.`,async()=>{
         const confirmBtn=document.getElementById('confirmOkBtn');
         await runGuarded(confirmBtn,'Deleting...',async()=>{
           const updates={};
           updates[`${DB_PATH}/areasBySite/${siteId}/${id}`]=null;
           updates[`${DB_PATH}/checklistsByArea/${siteId}/${id}`]=null;
           updates[`${DB_PATH}/areaLastSubmitted/${siteId}/${id}`]=null;
-          updates[`${DB_PATH}/auditSessions/${siteId}/${id}`]=null;
           updates[`${DB_PATH}/staffByArea/${siteId}/${id}`]=null;
           await db.ref().update(updates);
         });
@@ -2562,16 +2501,18 @@ function openReviewFindingModal(draft){
     editingFindingId=null; fLockedItem=null; fTitleSelected=null; fAssignedSelected=''; fAssignedMode='select';
     const btn=document.getElementById('reviewConfirmAddBtn');
     await runGuarded(btn,'Saving...',()=>saveFinding(theFinding));
-    if(returnItem){
-      const liveChecklist=(state.checklistsByArea[siteId]||{})[areaId]||[];
-      const liveItem=liveChecklist.find(c=>c.id===returnItem.id);
-      if(liveItem){ const computed=computeItemStatus(liveItem); liveItem.status = computed==='unchecked'?'good':computed; }
-      await Promise.all([saveChecklistsForArea(siteId,areaId,liveChecklist), touchAuditSession(siteId,areaId)]);
-    }
     logActivity(siteId, draft.editingFindingId?'Finding edited':'Finding created', `${theFinding.findingNo||''} — ${theFinding.title} (${theFinding.area})`);
-    render();
-    toast(draft.editingFindingId?'Finding updated':'Finding added');
-    if(returnItem) openChecklistDetail(returnItem.id); else closeModal();
+    if(returnItem){
+      // Part of the per-sub-area audit flow: add to the in-progress draft list and return to that screen (not yet submitted to the report).
+      if(!draft.editingFindingId) state.itemDraftFindingIds.push(theFinding.id);
+      closeModal();
+      render();
+    }else{
+      // Stand-alone finding (e.g. Resolver's quick-add button) — no audit draft/review step involved.
+      closeModal();
+      render();
+      toast(draft.editingFindingId?'Finding updated':'Finding added');
+    }
   };
 }
 
@@ -3289,7 +3230,16 @@ function render(){
   else if(state.tab==='reports') renderReports();
   else renderDashboard();
   resolverFab.style.display = state.role==='resolver' ? 'flex' : 'none';
-  resolverFab.onclick=()=>openAddFinding();
+  resolverFab.onclick=()=>{
+    // Resolvers can quick-add a finding from any tab — make sure there's a valid Site/Area context to attach it to.
+    if(!state.siteId || !state.accessibleSiteIds.includes(state.siteId)) state.siteId=state.accessibleSiteIds[0]||null;
+    if(state.siteId){
+      const areas=currentAreaList();
+      if(!state.areaId || !areas.some(a=>a.id===state.areaId)) state.areaId=areas[0]?areas[0].id:null;
+    }
+    if(!state.siteId || !state.areaId){ toast('No Site/Area available to attach a finding to yet'); return; }
+    openAddFinding();
+  };
 }
 
 (function init(){
