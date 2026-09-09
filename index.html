@@ -958,7 +958,7 @@ function loadPersistedData(){
 async function saveFinding(finding){
   if(!storageAvailable) return;
   try{ await db.ref(`${DB_PATH}/findings/${finding.siteId}/${finding.id}`).set(finding); }
-  catch(e){ console.error('saveFinding failed',e); toast(friendlyFirebaseError(e)); }
+  catch(e){ console.error('saveFinding failed',e); toast(friendlyFirebaseError(e)); throw e; }
 }
 async function updateFinding(siteId, id, patch){
   if(!storageAvailable) return;
@@ -1820,7 +1820,11 @@ function openItemReview(item, findingIds){
     const btn=document.getElementById('reviewConfirmBtn');
     const siteId=state.siteId, areaId=state.areaId;
     let result;
-    await runGuarded(btn,'Submitting...',async()=>{ result=await submitItemEntry(siteId,areaId,item,outcome,findingIds); });
+    try{
+      await runGuarded(btn,'Submitting...',async()=>{ result=await submitItemEntry(siteId,areaId,item,outcome,findingIds); });
+    }catch(e){
+      return; // submitItemEntry already showed the specific error toast — stay on this screen so they can retry
+    }
     closeModal();
     state.pickedItemId=null; state.itemDraftFindingIds=[];
     render();
@@ -1833,7 +1837,7 @@ function openItemReview(item, findingIds){
   };
 }
 async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
-  if(!storageAvailable) return {reportId:null,entryId:null};
+  if(!storageAvailable) throw new Error('Storage not available');
   const dateISO=todayISO();
   const dateLabel=fmtDateShort(dateISO);
   const reportId=todaysReportId(areaId);
@@ -1843,7 +1847,7 @@ async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
   const entry={ checklistItemId:item.id, itemName:item.name, outcome, findingIds:findingIds||[], submittedBy:state.username||'Unknown', submittedAt:Date.now() };
   const reportRef=db.ref(`${DB_PATH}/reports/${siteId}/${reportId}`);
   try{
-    await reportRef.transaction(current=>{
+    const result=await reportRef.transaction(current=>{
       const rep=current || { id:reportId, siteId, areaId, date:dateLabel, floor:areaName, entries:{} };
       rep.entries=rep.entries||{};
       rep.entries[entryId]=entry;
@@ -1854,7 +1858,8 @@ async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
       rep.siteId=siteId; rep.areaId=areaId; rep.id=reportId;
       return rep;
     });
-  }catch(e){ console.error('submitItemEntry failed',e); toast(friendlyFirebaseError(e)); }
+    if(!result.committed){ throw new Error('Report update was not committed — please try again.'); }
+  }catch(e){ console.error('submitItemEntry failed',e); toast(friendlyFirebaseError(e)); throw e; }
   logActivity(siteId, outcome==='ok'?'Checklist item OK':'Report submitted', `${item.name} — ${outcome==='ok'?'no issues':`${(findingIds||[]).length} finding(s)`}`);
   return {reportId,entryId};
 }
@@ -2468,13 +2473,14 @@ function openReviewFindingModal(draft){
   document.getElementById('reviewBackBtn').onclick=()=>renderAddFindingModal();
   document.getElementById('reviewConfirmAddBtn').onclick=async()=>{
     const siteId=state.siteId, areaId=state.areaId;
-    let theFinding;
+    let theFinding, isNew=false;
     if(draft.editingFindingId){
       theFinding=state.findings.find(x=>x.id===draft.editingFindingId);
       theFinding.title=draft.title; theFinding.area=draft.area; theFinding.checklistItemId=draft.checklistItemId;
       theFinding.severity=draft.severity; theFinding.description=draft.description; theFinding.assignedTo=draft.assignedTo;
       theFinding.photos.before=draft.photo; theFinding.updatedAt=Date.now();
     } else {
+      isNew=true;
       const newId=nextId();
       const today=new Date();
       const findingNo=`FA-${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}-${String(newId).slice(-4)}`;
@@ -2488,9 +2494,18 @@ function openReviewFindingModal(draft){
         resolvedBy:'', resolvedAt:null, verifiedBy:'', verifiedAt:null,
         resolutionStatus:'open', actionPlan:'',
       };
+      // Optimistic local update so the UI feels instant — rolled back below if the actual save fails.
       if(!state.findingsBySite[siteId]) state.findingsBySite[siteId]={};
       state.findingsBySite[siteId][theFinding.id]=theFinding;
       recomputeFlatFindings();
+    }
+    const btn=document.getElementById('reviewConfirmAddBtn');
+    try{
+      await runGuarded(btn,'Saving...',()=>saveFinding(theFinding));
+    }catch(e){
+      // Save genuinely failed — undo the optimistic add so state.findings matches reality, and let the person retry.
+      if(isNew){ delete state.findingsBySite[siteId][theFinding.id]; recomputeFlatFindings(); }
+      return;
     }
     if(draft.isNewStaffName){
       addPendingStaff(siteId, draft.assignedTo, areaId, state.username);
@@ -2499,8 +2514,6 @@ function openReviewFindingModal(draft){
     fPhotoData=null;
     const returnItem=fLockedItem;
     editingFindingId=null; fLockedItem=null; fTitleSelected=null; fAssignedSelected=''; fAssignedMode='select';
-    const btn=document.getElementById('reviewConfirmAddBtn');
-    await runGuarded(btn,'Saving...',()=>saveFinding(theFinding));
     logActivity(siteId, draft.editingFindingId?'Finding edited':'Finding created', `${theFinding.findingNo||''} — ${theFinding.title} (${theFinding.area})`);
     if(returnItem){
       // Part of the per-sub-area audit flow: add to the in-progress draft list and return to that screen (not yet submitted to the report).
