@@ -6,8 +6,8 @@
       "**/.*",
       "**/node_modules/**",
       "*.md",
-      "*.json",
-      "!manifest.json",
+      "firebase-config.example.json",
+      "firebase-security-rules.json",
       "docs/**"
     ],
     "rewrites": [
