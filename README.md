@@ -56,11 +56,11 @@ layouts/
 css/
   styles.css                  All styling (unchanged from the original, just extracted)
 
-docs/                          Setup guides (real auth, Firebase Hosting, multi-site)
+docs/                          Setup guides (real auth, multi-site)
 firebase-config.example.json   Template for config/firebase.config.js's shape
 firebase-security-rules.json   Realtime Database Security Rules — publish this in Firebase Console
-firebase.json                  Firebase Hosting config
-netlify.toml                   Netlify hosting config (legacy)
+vercel.json                    Vercel hosting config
+netlify.toml                   Netlify hosting config
 ```
 
 **Load order still matters, but it's now explicit.** These are real ES modules (`type="module"`),
@@ -105,14 +105,16 @@ Spin up a second, throwaway Firebase project instead:
 
 Still a static site — any static host works, as long as it serves all the folders above with their
 relative paths intact (this matters more now that the app is split into multiple files):
-- **Firebase Hosting**: `firebase init hosting` (point the public directory at this repo root),
-  then `firebase deploy`. See `docs/SETUP-firebase-hosting.md`, including a no-local-install option
-  via GitHub Actions.
+- **Vercel** (primary): connect this repo at vercel.com — Framework Preset "Other", no build
+  command, output directory `./`. `vercel.json` is already configured. Every push to `main`
+  auto-deploys, no CLI or GitHub Actions required.
+- **Netlify** (backup): connect this repo at netlify.com — it auto-detects `netlify.toml`.
 - **GitHub Pages**: enable Pages on this repo, serving from the root of the default branch.
 - Or upload the whole folder to any web server / object storage with static site hosting.
 
 Whatever you use, also add that domain to **Firebase Console → Authentication → Settings →
-Authorized domains**, or sign-in will fail with an `unauthorized-domain` error.
+Authorized domains**, or sign-in will fail with an `unauthorized-domain` error. Firebase itself is
+only used here for Authentication and the Realtime Database — not for hosting the site.
 
 ## First deploy / migration checklist
 

@@ -43,6 +43,13 @@
         }
       },
 
+      "subAreasByArea": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('active').val() === true && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)"
+        }
+      },
+
       "reports": {
         "$siteId": {
           ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
@@ -65,6 +72,13 @@
       },
 
       "titleTemplatesBySite": {
+        "$siteId": {
+          ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
+          ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"
+        }
+      },
+
+      "checklistsBySite": {
         "$siteId": {
           ".read": "auth != null && (root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin' || root.child('warehouseAuditData/userRoles').child(auth.uid).child('sites').child($siteId).val() === true)",
           ".write": "auth != null && root.child('warehouseAuditData/userRoles').child(auth.uid).child('role').val() === 'admin'"

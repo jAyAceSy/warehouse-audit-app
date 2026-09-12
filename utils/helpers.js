@@ -53,7 +53,7 @@ export function statusIcon(status){
 }
 export function itemFindings(item){
   const since=(state.areaLastSubmitted[state.siteId]||{})[state.areaId]||0;
-  return state.findings.filter(f=>f.checklistItemId===item.id && f.createdAt>since);
+  return state.findings.filter(f=>f.subAreaId===item.id && f.createdAt>since);
 }
 export function computeItemStatus(item){
   const attached=itemFindings(item);

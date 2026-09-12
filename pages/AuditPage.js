@@ -1,7 +1,7 @@
 /* ============================================================ DAILY AUDIT TAB ============================================================ */
-import { DB_PATH, DEFAULT_TITLE_TEMPLATES } from '../config/constants.js';
+import { DB_PATH, DEFAULT_CHECKLIST } from '../config/constants.js';
 import { ICONS } from '../assets/icons.js';
-import { state, currentAreaList, currentAreaName, currentSiteName, getChecklist, setChecklist } from '../state/store.js';
+import { state, currentAreaList, currentAreaName, currentSiteName, getSubAreas, setSubAreas } from '../state/store.js';
 import { db, refs, storageAvailable, compressImage, friendlyFirebaseError, recomputeFlatFindings } from '../services/firebase.service.js';
 import { toast, toastWithUndo, nextId, todayISO, relativeTime, statusIcon, dueBadgeHTML, findingCardStyle, fmtDateShort, resolutionPillHTML, groupedFindingsHTML } from '../utils/helpers.js';
 import { openModal, closeModal, openImageViewer, openConfirmModal } from '../components/Modal.js';
@@ -14,7 +14,7 @@ export function todaysReport(siteId, areaId){
 export function itemDoneCountToday(item){
   const rep=todaysReport(state.siteId, state.areaId);
   if(!rep || !rep.entries) return 0;
-  return Object.values(rep.entries).filter(e=>e.checklistItemId===item.id).length;
+  return Object.values(rep.entries).filter(e=>e.subAreaId===item.id).length;
 }
 
 export function renderAudit(){
@@ -69,7 +69,7 @@ export function renderAudit(){
     return;
   }
 
-  const checklist=getChecklist();
+  const subAreas=getSubAreas();
   const rep=todaysReport(state.siteId, state.areaId);
   const coveredToday = rep ? rep.completedItems : 0;
 
@@ -86,14 +86,14 @@ export function renderAudit(){
           </div>
         </div>
       </div>
-      ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use Manage Areas below to edit ${currentAreaName()}'s checklist.</div>` : ''}
+      ${isAdmin ? `<div class="lock-note">${ICONS.shield} You're logged in as Admin. Use Manage Areas below to edit ${currentAreaName()}'s sub-areas.</div>` : ''}
       <div class="card" style="text-align:center;padding:36px 20px;">
         ${ICONS.clipboard}
         <div style="font-weight:700;font-size:17px;margin:14px 0 6px;">${currentAreaName()}</div>
-        <div style="font-size:13px;color:var(--text-600);font-weight:600;margin-bottom:22px;">${checklist.length===0?'No checklist items yet':`${coveredToday} of ${checklist.length} sub-areas covered today`}</div>
-        ${isAuditor && checklist.length>0 ? `<button class="btn-primary" id="startAuditBtn" style="background:var(--orange-500);">${ICONS.check} Start Audit</button>` : ''}
-        ${checklist.length===0 && isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Add checklist items from Manage Areas below to begin.</div>` : ''}
-        ${checklist.length===0 && !isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Your Admin hasn't added checklist items for this Area yet.</div>` : ''}
+        <div style="font-size:13px;color:var(--text-600);font-weight:600;margin-bottom:22px;">${subAreas.length===0?'No sub-areas yet':`${coveredToday} of ${subAreas.length} sub-areas covered today`}</div>
+        ${isAuditor && subAreas.length>0 ? `<button class="btn-primary" id="startAuditBtn" style="background:var(--orange-500);">${ICONS.check} Start Audit</button>` : ''}
+        ${subAreas.length===0 && isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Add sub-areas from Manage Areas below to begin.</div>` : ''}
+        ${subAreas.length===0 && !isAdmin ? `<div style="font-size:12.5px;color:var(--text-600);">Your Admin hasn't added sub-areas for this Area yet.</div>` : ''}
       </div>
       <div class="section-head"><h2>Recent Findings — ${currentAreaName()}</h2><button class="link-btn" id="viewAllFindings">View All</button></div>
       ${groupedFindingsHTML(state.findings.filter(f=>f.siteId===state.siteId && f.areaId===state.areaId).slice(0,15))}
@@ -107,35 +107,29 @@ export function renderAudit(){
     return;
   }
 
-  // ---- Audit started, no item picked yet: dropdown of checklist items (sub-areas) ----
+  // ---- Audit started, no sub-area picked yet: visible list of sub-areas to tap (not a dropdown) ----
   if(!state.pickedItemId){
+    const rep2=todaysReport(state.siteId,state.areaId);
     document.getElementById('content').innerHTML = `
       <div class="section-head" style="margin-top:0;"><h2>${currentAreaName()} — pick a sub-area</h2></div>
       <div class="lock-note">${ICONS.info} Not obligated to cover every sub-area today — pick as many or as few as you need. A sub-area can be audited more than once.</div>
-      <div class="field-block">
-        <select class="select-input" id="itemPickSelect">
-          <option value="">Select a checklist item...</option>
-          ${checklist.map(item=>{
-            const rep2=todaysReport(state.siteId,state.areaId);
-            const n = rep2 && rep2.entries ? Object.values(rep2.entries).filter(e=>e.checklistItemId===item.id).length : 0;
-            return `<option value="${item.id}">${item.name}${n>0?` (done ${n}x today)`:''}</option>`;
-          }).join('')}
-        </select>
-      </div>
-      <button class="btn-secondary" style="width:100%;" id="backToStartBtn">${ICONS.chevronL} Back</button>
+      ${subAreas.length===0 ? `<div class="empty-checklist-note">${ICONS.clipboard}<div>No sub-areas set up for this Area yet.</div></div>` : subAreas.map(item=>{
+        const n = rep2 && rep2.entries ? Object.values(rep2.entries).filter(e=>e.subAreaId===item.id).length : 0;
+        return `<div class="checklist-item" data-pick-subarea="${item.id}"><div class="status-icon status-unchecked"></div><div style="flex:1;min-width:0;"><div class="ci-name">${item.name}</div>${n>0?`<div class="ci-sub unchecked">Done ${n}x today</div>`:''}</div><div class="chevron">${ICONS.chevronR}</div></div>`;
+      }).join('')}
+      <button class="btn-secondary" style="width:100%;margin-top:10px;" id="backToStartBtn">${ICONS.chevronL} Back</button>
       <div class="section-head"><h2>Today's entries — ${currentAreaName()}</h2></div>
       ${todaysEntriesHTML()}
     `;
-    document.getElementById('itemPickSelect').onchange=(e)=>{
-      if(!e.target.value) return;
-      state.pickedItemId=parseInt(e.target.value); state.itemDraftFindingIds=[]; render();
-    };
+    document.querySelectorAll('[data-pick-subarea]').forEach(el=>{
+      el.onclick=()=>{ state.pickedItemId=parseInt(el.dataset.pickSubarea); state.itemDraftFindingIds=[]; render(); };
+    });
     document.getElementById('backToStartBtn').onclick=()=>{ state.auditStarted=false; render(); };
     return;
   }
 
-  // ---- An item is picked: choose OK vs Flag, or review findings logged so far ----
-  const item=checklist.find(c=>c.id===state.pickedItemId);
+  // ---- A sub-area is picked: choose OK vs Flag, or review findings logged so far ----
+  const item=subAreas.find(c=>c.id===state.pickedItemId);
   if(!item){ state.pickedItemId=null; render(); return; }
   const draftFindings=state.itemDraftFindingIds.map(id=>state.findings.find(f=>f.id===id)).filter(Boolean);
 
@@ -189,7 +183,7 @@ export function adminToolsHTML(){
       <button class="action-tile tile-finding" id="manageAreasBtn">${ICONS.clipboard}Manage Areas</button>
     </div>
     <div class="action-tile-row" style="margin-bottom:10px;">
-      <button class="action-tile tile-checklist" id="manageTitlesBtn">${ICONS.pencil}Manage Titles</button>
+      <button class="action-tile tile-checklist" id="manageTitlesBtn">${ICONS.pencil}Manage Checklist</button>
       <button class="action-tile tile-finding" id="manageStaffBtn">${ICONS.user}Manage Staff</button>
     </div>
     <div class="action-tile-row" style="margin-bottom:10px;">
@@ -206,7 +200,7 @@ export function dangerZoneHTML(){
   return `
   <div class="danger-zone">
     <div class="card-title">Danger Zone</div>
-    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:12px;line-height:1.4;">Permanently erases every finding and report for ${currentSiteName()}, and resets its checklist statuses back to unchecked. This cannot be undone.</div>
+    <div style="font-size:12.5px;color:var(--text-600);font-weight:600;margin-bottom:12px;line-height:1.4;">Permanently erases every finding and report for ${currentSiteName()}, and resets its sub-area statuses back to unchecked. This cannot be undone.</div>
     <button class="btn-danger" id="clearAllDataBtn">${ICONS.trash} Clear ${currentSiteName()} Data</button>
   </div>`;
 }
@@ -226,7 +220,7 @@ export function wireCommonFooterHandlers(isAdmin){
   if(!isAdmin) return;
   const clearBtn=document.getElementById('clearAllDataBtn');
   if(clearBtn) clearBtn.onclick=()=>{
-    openConfirmModal(`This will permanently delete every finding and report for ${currentSiteName()}, and reset all its checklist statuses to unchecked. This cannot be undone. Continue?`,async()=>{
+    openConfirmModal(`This will permanently delete every finding and report for ${currentSiteName()}, and reset all its sub-area statuses to unchecked. This cannot be undone. Continue?`,async()=>{
       const confirmBtn=document.getElementById('confirmOkBtn');
       await runGuarded(confirmBtn,'Clearing...',()=>clearSiteData(state.siteId));
       closeModal(); render();
@@ -236,7 +230,7 @@ export function wireCommonFooterHandlers(isAdmin){
   };
   document.getElementById('manageSitesBtn').onclick=()=>openSiteManagement();
   document.getElementById('manageAreasBtn').onclick=()=>openAreaManagement(state.siteId);
-  document.getElementById('manageTitlesBtn').onclick=()=>openManageTitles();
+  document.getElementById('manageTitlesBtn').onclick=()=>openManageChecklist();
   document.getElementById('manageStaffBtn').onclick=()=>openManageStaff();
   document.getElementById('pendingStaffBtn').onclick=()=>openPendingStaff();
   document.getElementById('userMgmtBtn').onclick=()=>openUserManagement();
@@ -290,8 +284,8 @@ async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
   const reportId=todaysReportId(areaId);
   const entryId=db.ref().push().key;
   const areaName=((state.areasBySite[siteId]||{})[areaId]||{}).name||'Unknown Area';
-  const totalItemsNow=((state.checklistsByArea[siteId]||{})[areaId]||[]).length;
-  const entry={ checklistItemId:item.id, itemName:item.name, outcome, findingIds:findingIds||[], submittedBy:state.username||'Unknown', submittedAt:Date.now() };
+  const totalItemsNow=((state.subAreasByArea[siteId]||{})[areaId]||[]).length;
+  const entry={ subAreaId:item.id, itemName:item.name, outcome, findingIds:findingIds||[], submittedBy:state.username||'Unknown', submittedAt:Date.now() };
   const reportRef=db.ref(`${DB_PATH}/reports/${siteId}/${reportId}`);
   try{
     const result=await reportRef.transaction(current=>{
@@ -299,7 +293,7 @@ async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
       rep.entries=rep.entries||{};
       rep.entries[entryId]=entry;
       const allFindingIds=[]; const doneItemIds=new Set();
-      Object.values(rep.entries).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.checklistItemId); });
+      Object.values(rep.entries).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.subAreaId); });
       rep.findingIds=allFindingIds; rep.findingsCount=allFindingIds.length; rep.completedItems=doneItemIds.size;
       rep.totalItems=totalItemsNow; rep.submittedBy=entry.submittedBy; rep.date=dateLabel; rep.floor=areaName;
       rep.siteId=siteId; rep.areaId=areaId; rep.id=reportId;
@@ -307,7 +301,7 @@ async function submitItemEntry(siteId, areaId, item, outcome, findingIds){
     });
     if(!result.committed){ throw new Error('Report update was not committed — please try again.'); }
   }catch(e){ console.error('submitItemEntry failed',e); toast(friendlyFirebaseError(e)); throw e; }
-  logActivity(siteId, outcome==='ok'?'Checklist item OK':'Report submitted', `${item.name} — ${outcome==='ok'?'no issues':`${(findingIds||[]).length} finding(s)`}`);
+  logActivity(siteId, outcome==='ok'?'Sub-area OK':'Report submitted', `${item.name} — ${outcome==='ok'?'no issues':`${(findingIds||[]).length} finding(s)`}`);
   return {reportId,entryId};
 }
 async function undoItemEntry(siteId, areaId, reportId, entryId, findingIdsToDelete){
@@ -320,7 +314,7 @@ async function undoItemEntry(siteId, areaId, reportId, entryId, findingIdsToDele
       const remaining=current.entries;
       if(Object.keys(remaining).length===0) return null;
       const allFindingIds=[]; const doneItemIds=new Set();
-      Object.values(remaining).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.checklistItemId); });
+      Object.values(remaining).forEach(e=>{ (e.findingIds||[]).forEach(id=>allFindingIds.push(id)); doneItemIds.add(e.subAreaId); });
       current.findingIds=allFindingIds; current.findingsCount=allFindingIds.length; current.completedItems=doneItemIds.size;
       return current;
     });
@@ -332,48 +326,48 @@ async function undoItemEntry(siteId, areaId, reportId, entryId, findingIdsToDele
   }catch(e){ console.error('undoItemEntry failed',e); toast(friendlyFirebaseError(e)); }
 }
 
-export function openEditChecklistItem(id){
+export function openEditSubArea(id){
   const isNew = id===null;
-  const list=getChecklist();
+  const list=getSubAreas();
   const item = isNew ? {name:''} : list.find(c=>c.id===id);
   openModal(`
-    <div class="modal-head"><h3>${isNew?'Add Checklist Item':'Edit Checklist Item'} — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="field-block"><label class="field-label">Item Name</label><input class="text-input" id="itemNameInput" value="${item.name}" placeholder="e.g. Loading Dock"></div>
-    <button class="btn-primary" id="itemSaveBtn" style="margin-bottom:10px;">Save Item</button>
-    ${!isNew?`<button class="btn-secondary" style="width:100%;color:var(--red-500);border-color:var(--red-050);" id="itemDeleteBtn">${ICONS.trash} Remove Item</button>`:''}
+    <div class="modal-head"><h3>${isNew?'Add Sub-Area':'Edit Sub-Area'} — ${currentAreaName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="field-block"><label class="field-label">Sub-Area Name</label><input class="text-input" id="itemNameInput" value="${item.name}" placeholder="e.g. Loading Dock"></div>
+    <button class="btn-primary" id="itemSaveBtn" style="margin-bottom:10px;">Save Sub-Area</button>
+    ${!isNew?`<button class="btn-secondary" style="width:100%;color:var(--red-500);border-color:var(--red-050);" id="itemDeleteBtn">${ICONS.trash} Remove Sub-Area</button>`:''}
   `);
   document.getElementById('itemSaveBtn').onclick=async()=>{
     const name=document.getElementById('itemNameInput').value.trim();
     if(!name){toast('Please enter a name');return;}
-    if(isNew){ list.push({id:nextId(),name,status:'unchecked'}); toast('Checklist item added to '+currentAreaName()); }
-    else { item.name=name; toast('Checklist item updated'); }
+    if(isNew){ list.push({id:nextId(),name,status:'unchecked'}); toast('Sub-area added to '+currentAreaName()); }
+    else { item.name=name; toast('Sub-area updated'); }
     const btn=document.getElementById('itemSaveBtn');
-    await runGuarded(btn,'Saving...',()=>saveChecklistsForArea(state.siteId,state.areaId,list));
-    logActivity(state.siteId, 'Checklist modified', `${isNew?'Added':'Renamed'} "${name}" on ${currentSiteName()} / ${currentAreaName()}`);
+    await runGuarded(btn,'Saving...',()=>saveSubAreasForArea(state.siteId,state.areaId,list));
+    logActivity(state.siteId, 'Sub-areas modified', `${isNew?'Added':'Renamed'} "${name}" on ${currentSiteName()} / ${currentAreaName()}`);
     closeModal();render();
   };
   if(!isNew){
     document.getElementById('itemDeleteBtn').onclick=async()=>{
       const newList=list.filter(c=>c.id!==id);
-      setChecklist(newList);
+      setSubAreas(newList);
       const btn=document.getElementById('itemDeleteBtn');
-      await runGuarded(btn,'Removing...',()=>saveChecklistsForArea(state.siteId,state.areaId,newList));
-      logActivity(state.siteId, 'Checklist modified', `Removed "${item.name}" from ${currentSiteName()} / ${currentAreaName()}`);
-      closeModal();render();toast('Checklist item removed');
+      await runGuarded(btn,'Removing...',()=>saveSubAreasForArea(state.siteId,state.areaId,newList));
+      logActivity(state.siteId, 'Sub-areas modified', `Removed "${item.name}" from ${currentSiteName()} / ${currentAreaName()}`);
+      closeModal();render();toast('Sub-area removed');
     };
   }
 }
 
-/* ---------- Admin Tools: Manage Titles ---------- */
-export function openManageTitles(){
+/* ---------- Admin Tools: Manage Checklist ---------- */
+export function openManageChecklist(){
   const siteId=state.siteId;
-  const titles=state.titleTemplatesBySite[siteId]||DEFAULT_TITLE_TEMPLATES.slice();
+  const items=state.checklistsBySite[siteId]||DEFAULT_CHECKLIST.slice();
   openModal(`
-    <div class="modal-head"><h3>Manage Finding Titles — ${currentSiteName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
-    <div class="lock-note">${ICONS.info} This list populates the Title dropdown when logging a finding for ${currentSiteName()}. Each Site has its own list.</div>
-    <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newTitleInput" placeholder="Add a new title..."><button class="btn-primary" id="addTitleBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
+    <div class="modal-head"><h3>Manage Checklist — ${currentSiteName()}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
+    <div class="lock-note">${ICONS.info} This checklist populates the finding-title dropdown when logging a finding for ${currentSiteName()}. Each Site has its own checklist.</div>
+    <div class="field-block"><div style="display:flex;gap:8px;"><input class="text-input" id="newTitleInput" placeholder="Add a checklist item..."><button class="btn-primary" id="addTitleBtn" style="width:auto;padding:12px 16px;">${ICONS.plus}</button></div></div>
     <div id="titleListWrap">
-      ${titles.map((t,i)=>`
+      ${items.map((t,i)=>`
         <div class="checklist-item" style="cursor:default;">
           <div style="flex:1;min-width:0;"><div class="ci-name">${t}</div></div>
           <button class="admin-edit-btn" data-remove-title="${i}" style="background:var(--red-050);color:var(--red-500);">${ICONS.trash}</button>
@@ -383,21 +377,21 @@ export function openManageTitles(){
   `);
   document.getElementById('addTitleBtn').onclick=async()=>{
     const val=document.getElementById('newTitleInput').value.trim();
-    if(!val){toast('Enter a title first');return;}
-    if(titles.includes(val)){toast('That title already exists');return;}
-    const updated=[...titles,val];
-    await saveTitleTemplates(siteId,updated);
-    logActivity(siteId, 'Checklist modified', `Added title template "${val}"`);
-    openManageTitles();
+    if(!val){toast('Enter a checklist item first');return;}
+    if(items.includes(val)){toast('That checklist item already exists');return;}
+    const updated=[...items,val];
+    await saveChecklistForSite(siteId,updated);
+    logActivity(siteId, 'Checklist modified', `Added checklist item "${val}"`);
+    openManageChecklist();
   };
   document.querySelectorAll('[data-remove-title]').forEach(btn=>{
     btn.onclick=async()=>{
       const idx=parseInt(btn.dataset.removeTitle);
-      const removed=titles[idx];
-      const updated=titles.filter((_,i)=>i!==idx);
-      await saveTitleTemplates(siteId,updated);
-      logActivity(siteId, 'Checklist modified', `Removed title template "${removed}"`);
-      openManageTitles();
+      const removed=items[idx];
+      const updated=items.filter((_,i)=>i!==idx);
+      await saveChecklistForSite(siteId,updated);
+      logActivity(siteId, 'Checklist modified', `Removed checklist item "${removed}"`);
+      openManageChecklist();
     };
   });
 }
@@ -529,7 +523,7 @@ export function openSiteManagement(){
         const confirmBtn=document.getElementById('confirmOkBtn');
         await runGuarded(confirmBtn,'Deleting...',async()=>{
           const updates={};
-          ['findings','reports','checklistsByArea','areaLastSubmitted','titleTemplatesBySite','staffByArea','pendingStaff','activityLog'].forEach(k=>{
+          ['findings','reports','subAreasByArea','areaLastSubmitted','checklistsBySite','staffByArea','pendingStaff','activityLog'].forEach(k=>{
             updates[`${DB_PATH}/${k}/${id}`]=null;
           });
           updates[`${DB_PATH}/archive/findings/${id}`]=null;
@@ -569,7 +563,7 @@ export function openAreaManagement(siteId){
     const id=refs.areasBySite.child(siteId).push().key;
     try{
       await refs.areasBySite.child(siteId).child(id).set({name,order:list.length,createdAt:Date.now()});
-      await db.ref(`${DB_PATH}/checklistsByArea/${siteId}/${id}`).set([]);
+      await db.ref(`${DB_PATH}/subAreasByArea/${siteId}/${id}`).set([]);
       logActivity(siteId,'Checklist modified',`Added Area "${name}"`);
       toast('Area added');
       openAreaManagement(siteId);
@@ -589,12 +583,12 @@ export function openAreaManagement(siteId){
     btn.onclick=()=>{
       const id=btn.dataset.deleteArea;
       const a=(state.areasBySite[siteId]||{})[id];
-      openConfirmModal(`Delete "${a.name}"? Its checklist template will be removed. Past findings and reports stay in your records. This cannot be undone.`,async()=>{
+      openConfirmModal(`Delete "${a.name}"? Its sub-areas will be removed. Past findings and reports stay in your records. This cannot be undone.`,async()=>{
         const confirmBtn=document.getElementById('confirmOkBtn');
         await runGuarded(confirmBtn,'Deleting...',async()=>{
           const updates={};
           updates[`${DB_PATH}/areasBySite/${siteId}/${id}`]=null;
-          updates[`${DB_PATH}/checklistsByArea/${siteId}/${id}`]=null;
+          updates[`${DB_PATH}/subAreasByArea/${siteId}/${id}`]=null;
           updates[`${DB_PATH}/areaLastSubmitted/${siteId}/${id}`]=null;
           updates[`${DB_PATH}/staffByArea/${siteId}/${id}`]=null;
           await db.ref().update(updates);
@@ -798,27 +792,27 @@ export function openAddFinding(lockedItem, editFinding){
 export function renderAddFindingModal(){
   const editingFinding=editingFindingId?state.findings.find(f=>f.id===editingFindingId):null;
   const descVal=document.getElementById('fDesc')?document.getElementById('fDesc').value:(editingFinding?editingFinding.description:'');
-  const checklist=getChecklist();
-  const titles=state.titleTemplatesBySite[state.siteId]||DEFAULT_TITLE_TEMPLATES;
-  const titleVal=fTitleSelected || (editingFinding?editingFinding.title:'') || titles[0] || '';
+  const subAreas=getSubAreas();
+  const checklistItems=state.checklistsBySite[state.siteId]||DEFAULT_CHECKLIST;
+  const titleVal=fTitleSelected || (editingFinding?editingFinding.title:'') || checklistItems[0] || '';
   fTitleSelected=titleVal;
   const staffList=(state.staffByAreaBySite[state.siteId]||{})[state.areaId]||[];
   const showCustomAssigned = fAssignedMode==='custom';
   openModal(`
     <div class="modal-head"><h3>${editingFinding?'Edit Finding':'Add Finding'}</h3><button class="modal-close" onclick="closeModal()">${ICONS.x}</button></div>
     <div class="field-block">
-      <label class="field-label">Title</label>
+      <label class="field-label">Checklist Item</label>
       <select class="select-input" id="fTitle">
-        ${titles.map(t=>`<option value="${t}" ${t===titleVal?'selected':''}>${t}</option>`).join('')}
+        ${checklistItems.map(t=>`<option value="${t}" ${t===titleVal?'selected':''}>${t}</option>`).join('')}
       </select>
     </div>
     <div class="field-block">
-      <label class="field-label">Checklist Item</label>
+      <label class="field-label">Sub-Area</label>
       ${fLockedItem
         ? `<div class="date-field" style="cursor:default;"><div>${fLockedItem.name}</div></div>`
-        : checklist.length
-          ? `<select class="select-input" id="fArea">${checklist.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select>`
-          : `<div class="lock-note">${ICONS.info} No checklist items exist for ${currentAreaName()} yet.</div>`}
+        : subAreas.length
+          ? `<select class="select-input" id="fArea">${subAreas.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select>`
+          : `<div class="lock-note">${ICONS.info} No sub-areas exist for ${currentAreaName()} yet.</div>`}
     </div>
     <div class="field-block">
       <label class="field-label">Severity</label>
@@ -889,13 +883,13 @@ export function renderAddFindingModal(){
     let targetItem=fLockedItem;
     if(!targetItem){
       const areaSelect=document.getElementById('fArea');
-      if(!areaSelect){toast('Add a checklist item first');return;}
-      targetItem=checklist.find(c=>c.id===parseInt(areaSelect.value));
+      if(!areaSelect){toast('Add a sub-area first');return;}
+      targetItem=subAreas.find(c=>c.id===parseInt(areaSelect.value));
     }
     const assignedTo=(fAssignedSelected||'').trim();
     const isNewStaffName = assignedTo && fAssignedMode==='custom' && !staffList.includes(assignedTo);
     const draft={
-      title, area:targetItem.name, checklistItemId:targetItem.id,
+      title, area:targetItem.name, subAreaId:targetItem.id,
       severity:sevSelected, description:document.getElementById('fDesc').value,
       assignedTo, isNewStaffName,
       photo:fPhotoData, editingFindingId,
@@ -923,7 +917,7 @@ export function openReviewFindingModal(draft){
     let theFinding, isNew=false;
     if(draft.editingFindingId){
       theFinding=state.findings.find(x=>x.id===draft.editingFindingId);
-      theFinding.title=draft.title; theFinding.area=draft.area; theFinding.checklistItemId=draft.checklistItemId;
+      theFinding.title=draft.title; theFinding.area=draft.area; theFinding.subAreaId=draft.subAreaId;
       theFinding.severity=draft.severity; theFinding.description=draft.description; theFinding.assignedTo=draft.assignedTo;
       theFinding.photos.before=draft.photo; theFinding.updatedAt=Date.now();
     } else {
@@ -934,7 +928,7 @@ export function openReviewFindingModal(draft){
       theFinding={
         id:newId, findingNo, title:draft.title, description:draft.description,
         category:'', severity:draft.severity, siteId, areaId, floor:currentAreaName(), area:draft.area,
-        checklistItemId:draft.checklistItemId, assignedTo:draft.assignedTo,
+        subAreaId:draft.subAreaId, assignedTo:draft.assignedTo,
         time:'Just now', color:'#6b7688',
         photos:{before:draft.photo, after:null},
         createdBy:state.username, createdAt:Date.now(), updatedAt:Date.now(),

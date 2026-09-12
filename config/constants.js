@@ -10,8 +10,9 @@ export const DB_PATH = 'warehouseAuditData';
 // How many days after a finding is logged it becomes "due", per severity.
 export const DUE_OFFSET_DAYS = { High: 0, Medium: 3, Low: 7 };
 
-// Default checklist-item issue titles offered when none have been customized yet for a site.
-export const DEFAULT_TITLE_TEMPLATES = [
+// Default checklist — the standard issue titles offered when logging a finding, until a site
+// customizes its own list. Each Site can have its own checklist (see checklistsBySite).
+export const DEFAULT_CHECKLIST = [
   'Damaged Stocks', 'Missing Tags', 'FEFO Concerns', 'Expired Items', 'Blocked Fire Exit',
   'Poor Housekeeping', 'Wrong Location', 'Broken Rack', 'Leaking Container', 'Pest Sighting'
 ];

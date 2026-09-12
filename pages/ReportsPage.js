@@ -160,7 +160,7 @@ export function exportFileSuffix(){
 export function hasExportableData(){ return getFilteredReports().length>0; }
 export function exportReportCSV(){
   if(!hasExportableData()){toast('No reports match that filter');return;}
-  let csv='Site,Date,Submitted By,Area,Checklists,Title,Description,Image,Resolution,Action Plan,Image\n';
+  let csv='Site,Date,Submitted By,Area,Sub-Area,Checklist Item,Description,Image,Resolution,Action Plan,Image\n';
   getFilteredReports().forEach(r=>{
     const dateStr=fmtDateMMDDYY(r.date);
     const submitter=r.submittedBy||'Unknown';
@@ -204,7 +204,7 @@ export function exportReportPDF(){
   const doc=new jsPDF({orientation:'landscape'});
   const pageH=doc.internal.pageSize.getHeight();
   const marginX=10;
-  // 0 Site | 1 Date | 2 Submitted By | 3 Area | 4 Checklists | 5 Title | 6 Description | 7 Image || 8 Resolution | 9 Action Plan | 10 Image
+  // 0 Site | 1 Date | 2 Submitted By | 3 Area | 4 Sub-Area | 5 Checklist Item | 6 Description | 7 Image || 8 Resolution | 9 Action Plan | 10 Image
   const colW=[20,14,22,18,22,24,45,16, 16,32,16];
   const colX=[marginX];
   for(let i=0;i<colW.length-1;i++) colX.push(colX[i]+colW[i]);
@@ -221,7 +221,7 @@ export function exportReportPDF(){
     doc.text('Audit Findings',colX[0]+2,y+4.2);
     doc.text('Resolution',colX[8]+2,y+4.2);
     y+=6;
-    const heads=['Site','Date','Submitted By','Area','Checklists','Title','Description','Image','Resolution','Action Plan','Image'];
+    const heads=['Site','Date','Submitted By','Area','Sub-Area','Checklist Item','Description','Image','Resolution','Action Plan','Image'];
     doc.setFillColor(253,238,224); doc.rect(colX[0],y,orangeSpan,6,'F');
     doc.setFillColor(228,246,237); doc.rect(colX[8],y,greenSpan,6,'F');
     doc.setTextColor(20,24,43); doc.setFont('helvetica','bold'); doc.setFontSize(7);

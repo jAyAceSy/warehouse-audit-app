@@ -71,8 +71,8 @@ export function computeKPIs(list){
 
   let bestArea='—';
   const allItems=[];
-  Object.keys(state.checklistsByArea).forEach(siteId=>{
-    Object.values(state.checklistsByArea[siteId]||{}).forEach(items=>(items||[]).forEach(item=>allItems.push(item.name)));
+  Object.keys(state.subAreasByArea).forEach(siteId=>{
+    Object.values(state.subAreasByArea[siteId]||{}).forEach(items=>(items||[]).forEach(item=>allItems.push(item.name)));
   });
   const zeroFindingItems=allItems.filter(name=>!areaCounts[name]);
   if(zeroFindingItems.length) bestArea=zeroFindingItems[0];
@@ -155,13 +155,13 @@ export function renderDashboard(){
     siteIdsToShow.forEach(sid=>{
       const areas=Object.entries(state.areasBySite[sid]||{});
       areas.forEach(([aid,a])=>{
-        const list=(state.checklistsByArea[sid]||{})[aid]||[];
+        const list=(state.subAreasByArea[sid]||{})[aid]||[];
         const t=list.length; const c=list.filter(x=>x.status!=='unchecked').length;
         rows.push({label: siteIdsToShow.length>1 ? `${(state.sites[sid]||{}).name} — ${a.name}` : a.name, pct: t?Math.round(c/t*100):0});
       });
     });
     if(rows.length===0) return '';
-    return `<div class="card"><div class="card-title">Checklist Completion by Area</div>
+    return `<div class="card"><div class="card-title">Sub-Area Completion by Area</div>
       ${rows.map(r=>`<div class="area-bar-row"><div class="area-bar-label"><span>${r.label}</span><span>${r.pct}%</span></div><div class="area-bar-track"><div class="area-bar-fill" style="width:${r.pct}%"></div></div></div>`).join('')}
     </div>`;
   })()}

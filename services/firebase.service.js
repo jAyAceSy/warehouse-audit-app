@@ -7,11 +7,11 @@
      warehouseAuditData/
        sites/                        { [siteId]: {name,createdAt,createdBy,active} }               — broadly readable, admin-writable
        areasBySite/                  { [siteId]: { [areaId]: {name,order,createdAt} } }             — broadly readable, admin-writable
-       checklistsByArea/{siteId}/    { [areaId]: [items] }                                          — per-site gated
+       subAreasByArea/{siteId}/      { [areaId]: [subAreas] }                                       — per-site gated
        findings/{siteId}/            { [findingId]: finding }                                       — per-site gated
        reports/{siteId}/             { [reportId]: report }                                         — per-site gated
        areaLastSubmitted/{siteId}/   { [areaId]: timestamp }                                        — per-site gated
-       titleTemplatesBySite/{siteId} [titles]                                                       — per-site gated
+       checklistsBySite/{siteId}     [checklist item strings]                                       — per-site gated
        staffByArea/{siteId}/         { [areaId]: [names] }                                          — per-site gated
        pendingStaff/{siteId}/        { [id]: {...} }                                                — per-site gated
        activityLog/{siteId}/         { [id]: {...} }                                                — per-site gated (site-scoped notifications)
@@ -26,7 +26,7 @@
    global — no import needed for it, same as in the original single-file app.
 ============================================================ */
 import { firebaseConfig } from '../config/firebase.config.js';
-import { DB_PATH, DEFAULT_TITLE_TEMPLATES } from '../config/constants.js';
+import { DB_PATH, DEFAULT_CHECKLIST } from '../config/constants.js';
 import { ICONS } from '../assets/icons.js';
 import { state, computeAccessibleSiteIds } from '../state/store.js';
 import { toast } from '../utils/helpers.js';
@@ -38,7 +38,7 @@ export let db=null;
 export let auth=null;
 export let secondaryApp=null;      // isolated Firebase app instance so Admin can create accounts without being signed out of their own session
 export let refs={};                // top-level refs that don't depend on which sites are accessible (sites, areasBySite, userRoles, meta, users, adminActivityLog, archive roots)
-export let siteListeners={};       // { [siteId]: { findings, reports, checklists, areaLastSubmitted, titleTemplates, staffByArea, pendingStaff, activityLog, archiveFindings, archiveReports } } — dynamically attached/detached per accessible site
+export let siteListeners={};       // { [siteId]: { findings, reports, subAreas, areaLastSubmitted, checklist, staffByArea, pendingStaff, activityLog, archiveFindings, archiveReports } } — dynamically attached/detached per accessible site
 export let listenersAttached=false;
 export let appDataLoaded=false;
 export let myRoleRef=null;
@@ -247,9 +247,9 @@ export function attachSiteListeners(siteId){
   const l={
     findings:db.ref(`${base}/findings/${siteId}`),
     reports:db.ref(`${base}/reports/${siteId}`),
-    checklists:db.ref(`${base}/checklistsByArea/${siteId}`),
+    subAreas:db.ref(`${base}/subAreasByArea/${siteId}`),
     areaLastSubmitted:db.ref(`${base}/areaLastSubmitted/${siteId}`),
-    titleTemplates:db.ref(`${base}/titleTemplatesBySite/${siteId}`),
+    checklist:db.ref(`${base}/checklistsBySite/${siteId}`),
     staffByArea:db.ref(`${base}/staffByArea/${siteId}`),
     pendingStaff:db.ref(`${base}/pendingStaff/${siteId}`),
     activityLog:db.ref(`${base}/activityLog/${siteId}`),
@@ -258,9 +258,9 @@ export function attachSiteListeners(siteId){
   };
   l.findings.on('value',snap=>{ state.findingsBySite[siteId]=snap.val()||{}; recomputeFlatFindings(); rerenderIfIdle(); });
   l.reports.on('value',snap=>{ state.reportsBySite[siteId]=snap.val()||{}; recomputeFlatReports(); rerenderIfIdle(); });
-  l.checklists.on('value',snap=>{ state.checklistsByArea[siteId]=snap.val()||{}; rerenderIfIdle(); });
+  l.subAreas.on('value',snap=>{ state.subAreasByArea[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.areaLastSubmitted.on('value',snap=>{ state.areaLastSubmitted[siteId]=snap.val()||{}; rerenderIfIdle(); });
-  l.titleTemplates.on('value',snap=>{ const d=snap.val(); state.titleTemplatesBySite[siteId]=(Array.isArray(d)&&d.length)?d:DEFAULT_TITLE_TEMPLATES.slice(); rerenderIfIdle(); });
+  l.checklist.on('value',snap=>{ const d=snap.val(); state.checklistsBySite[siteId]=(Array.isArray(d)&&d.length)?d:DEFAULT_CHECKLIST.slice(); rerenderIfIdle(); });
   l.staffByArea.on('value',snap=>{ state.staffByAreaBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.pendingStaff.on('value',snap=>{ state.pendingStaffBySite[siteId]=snap.val()||{}; rerenderIfIdle(); });
   l.activityLog.on('value',snap=>{ state.activityLogBySite[siteId]=snap.val()||{}; recomputeFlatActivityLog(); rerenderIfIdle(); });
@@ -273,7 +273,7 @@ export function detachSiteListeners(siteId){
   if(!l) return;
   Object.values(l).forEach(ref=>ref.off());
   delete siteListeners[siteId];
-  ['findingsBySite','reportsBySite','checklistsByArea','areaLastSubmitted','titleTemplatesBySite','staffByAreaBySite','pendingStaffBySite','activityLogBySite','archivedFindingsBySite','archivedReportsBySite'].forEach(k=>delete state[k][siteId]);
+  ['findingsBySite','reportsBySite','subAreasByArea','areaLastSubmitted','checklistsBySite','staffByAreaBySite','pendingStaffBySite','activityLogBySite','archivedFindingsBySite','archivedReportsBySite'].forEach(k=>delete state[k][siteId]);
   recomputeFlatFindings(); recomputeFlatReports(); recomputeFlatActivityLog(); recomputeFlatArchive();
 }
 export function reconcileSiteSubscriptions(){
@@ -321,10 +321,10 @@ async function saveReport(report){
   try{ await db.ref(`${DB_PATH}/reports/${report.siteId}/${report.id}`).set(report); }
   catch(e){ console.error('saveReport failed',e); toast(friendlyFirebaseError(e)); }
 }
-async function saveChecklistsForArea(siteId, areaId, items){
+async function saveSubAreasForArea(siteId, areaId, items){
   if(!storageAvailable) return;
-  try{ await db.ref(`${DB_PATH}/checklistsByArea/${siteId}/${areaId}`).set(items); }
-  catch(e){ console.error('saveChecklistsForArea failed',e); toast(friendlyFirebaseError(e)); }
+  try{ await db.ref(`${DB_PATH}/subAreasByArea/${siteId}/${areaId}`).set(items); }
+  catch(e){ console.error('saveSubAreasForArea failed',e); toast(friendlyFirebaseError(e)); }
 }
 async function setAreaLastSubmitted(siteId, areaId, ts){
   if(!storageAvailable) return;
@@ -334,13 +334,13 @@ async function setAreaLastSubmitted(siteId, areaId, ts){
 async function clearSiteData(siteId){
   if(!storageAvailable) return;
   try{
-    const resetChecklists={};
-    const areas=state.checklistsByArea[siteId]||{};
-    Object.keys(areas).forEach(areaId=>{ resetChecklists[areaId]=(areas[areaId]||[]).map(item=>({...item,status:'unchecked'})); });
+    const resetSubAreas={};
+    const areas=state.subAreasByArea[siteId]||{};
+    Object.keys(areas).forEach(areaId=>{ resetSubAreas[areaId]=(areas[areaId]||[]).map(item=>({...item,status:'unchecked'})); });
     await Promise.all([
       db.ref(`${DB_PATH}/findings/${siteId}`).set(null),
       db.ref(`${DB_PATH}/reports/${siteId}`).set(null),
-      db.ref(`${DB_PATH}/checklistsByArea/${siteId}`).set(resetChecklists),
+      db.ref(`${DB_PATH}/subAreasByArea/${siteId}`).set(resetSubAreas),
       db.ref(`${DB_PATH}/areaLastSubmitted/${siteId}`).set(null),
     ]);
   }catch(e){ console.error('clearSiteData failed',e); toast(friendlyFirebaseError(e)); }
@@ -443,11 +443,11 @@ export function subscribeToAdminActivityLog(){
   });
 }
 
-/* ---------- Title templates & per-Area staff (Admin-managed, per-Site) ---------- */
-async function saveTitleTemplates(siteId, list){
+/* ---------- Checklist & per-Area staff (Admin-managed, per-Site) ---------- */
+async function saveChecklistForSite(siteId, list){
   if(!storageAvailable) return;
-  try{ await db.ref(`${DB_PATH}/titleTemplatesBySite/${siteId}`).set(list); }
-  catch(e){ console.error('saveTitleTemplates failed',e); toast(friendlyFirebaseError(e)); }
+  try{ await db.ref(`${DB_PATH}/checklistsBySite/${siteId}`).set(list); }
+  catch(e){ console.error('saveChecklistForSite failed',e); toast(friendlyFirebaseError(e)); }
 }
 async function saveStaffForArea(siteId, areaId, list){
   if(!storageAvailable) return;

@@ -21,11 +21,11 @@ export const state = {
   siteId:null,              // the Site currently being worked in (audit / reports / dashboard context when scoped)
   areaId:null,              // the Area currently being audited
   auditStarted:false,       // has the auditor tapped "Start Audit" for the current Area
-  pickedItemId:null,        // the checklist item currently being audited within this Area
-  itemDraftFindingIds:[],   // findings logged so far for the item currently being audited, before Review & Submit
+  pickedItemId:null,        // the sub-area currently being audited within this Area
+  itemDraftFindingIds:[],   // findings logged so far for the sub-area currently being audited, before Review & Submit
   accessibleSiteIds:[],     // computed: sites this signed-in user may read/write (all sites if admin)
   notifications:[],
-  checklistsByArea:{},      // { [siteId]: { [areaId]: [items] } }
+  subAreasByArea:{},        // { [siteId]: { [areaId]: [subAreas] } }
   findingsBySite:{},        // { [siteId]: { [findingId]: finding } } — raw, per-site
   findings:[],              // flattened across accessible sites, kept for compatibility with existing render/filter code
   reportsBySite:{},
@@ -50,7 +50,7 @@ export const state = {
   archivedReportsBySite:{},
   archivedFindings:[],
   archivedReports:[],
-  titleTemplatesBySite:{},  // { [siteId]: [titles] }
+  checklistsBySite:{},      // { [siteId]: [checklist item strings] } — the picklist for a finding's title
   staffByAreaBySite:{},     // { [siteId]: { [areaId]: [names] } }
   pendingStaffBySite:{},    // { [siteId]: { [id]: {name,areaId,requestedBy,requestedAt} } }
   filterStatus:'all',
@@ -75,8 +75,8 @@ export function computeAccessibleSiteIds(){
   if(state.role==='admin') return Object.keys(state.sites);
   return mySiteIds().filter(id=>state.sites[id]);
 }
-export function getChecklist(){ return (state.checklistsByArea[state.siteId]||{})[state.areaId]||[]; }
-export function setChecklist(arr){
-  if(!state.checklistsByArea[state.siteId]) state.checklistsByArea[state.siteId]={};
-  state.checklistsByArea[state.siteId][state.areaId]=arr;
+export function getSubAreas(){ return (state.subAreasByArea[state.siteId]||{})[state.areaId]||[]; }
+export function setSubAreas(arr){
+  if(!state.subAreasByArea[state.siteId]) state.subAreasByArea[state.siteId]={};
+  state.subAreasByArea[state.siteId][state.areaId]=arr;
 }
